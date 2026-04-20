@@ -4,6 +4,21 @@ SpecPilot is a contract-grounded API testing copilot built with Next.js. It turn
 
 It is designed as a flagship GenAI portfolio project: the product uses AI where it helps, but the workflow stays grounded in the uploaded contract and the execution evidence stays reproducible.
 
+## Live Demo
+
+- Live app: [https://specpilot-ruby.vercel.app/](https://specpilot-ruby.vercel.app/)
+- Source code: [https://github.com/Adi1816/specpilot](https://github.com/Adi1816/specpilot)
+
+If you are reviewing the project for the first time, open the live app and walk through the bundled demo flow:
+
+1. `Load demo spec`
+2. `Analyze spec`
+3. `Generate test plan`
+4. `Run suite`
+5. `Copy report`
+
+That path shows the full end-to-end product without requiring any external API.
+
 ## What SpecPilot Does
 
 1. Accepts an OpenAPI 3.x or Swagger 2.0 file in JSON or YAML.
@@ -199,6 +214,8 @@ You can also emphasize that the project demonstrates:
 - Built a Next.js and TypeScript application that converts OpenAPI contracts into deterministic API test suites, execution dashboards, and markdown QA reports.
 - Designed an AI-assisted workflow where model output is additive and grounded in contract-derived coverage rather than replacing deterministic test generation.
 - Implemented typed route handlers, contract normalization, auth-aware execution, and end-to-end reporting in a portfolio-ready engineering tool.
+
+For GitHub description text, LinkedIn copy, demo scripts, and presentation-ready project messaging, see [PORTFOLIO_ASSETS.md](./PORTFOLIO_ASSETS.md).
 
 ## Verification
 
