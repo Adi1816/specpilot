@@ -323,6 +323,16 @@ export async function generateTestPlan(
 
   const aiMemo = await generateOptionalAiMemo(prompt);
 
+  if (aiMemo) {
+    console.info(
+      `[SpecPilot AI] Using OpenAI-generated risk memo for ${operations.length} selected operation${operations.length === 1 ? "" : "s"}.`,
+    );
+  } else {
+    console.warn(
+      `[SpecPilot AI] Falling back to deterministic risk memo for ${operations.length} selected operation${operations.length === 1 ? "" : "s"}.`,
+    );
+  }
+
   return {
     selectedOperationIds: operationIds,
     testCases,
