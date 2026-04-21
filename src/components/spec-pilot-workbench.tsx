@@ -20,10 +20,26 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { demoSpecText } from "@/lib/demo-spec";
+import {
+  buildRunHistoryEntry,
+  clearRunHistory,
+  diffRunHistory,
+  findDefaultBaseline,
+  insertRunHistoryEntry,
+  loadRunHistory,
+  saveRunHistory,
+} from "@/lib/run-history";
 import type {
+  HybridScenario,
   NormalizedSpec,
+  RiskInsight,
+  RiskMemoSource,
+  RunHistoryDiff,
+  RunHistoryEntry,
   RunSummary,
   StrategyMode,
+  TestCase,
+  TestCaseSource,
   TestPlan,
   TestResult,
 } from "@/lib/types";
@@ -118,6 +134,61 @@ function revealStyle(delay: number): CSSProperties {
   };
 }
 
+function formatRiskSourceLabel(source: RiskMemoSource) {
+  if (source === "gemini") {
+    return "Gemini";
+  }
+
+  if (source === "openai") {
+    return "OpenAI legacy";
+  }
+
+  if (source === "fallback") {
+    return "Deterministic fallback";
+  }
+
+  return "Baseline deterministic";
+}
+
+function formatRiskSourceContext(source: RiskMemoSource) {
+  if (source === "gemini" || source === "openai") {
+    return "AI-prioritized";
+  }
+
+  if (source === "fallback") {
+    return "Contract-ranked";
+  }
+
+  return "Core only";
+}
+
+function formatRunTimestamp(value: string) {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function formatDelta(value: number) {
+  if (value === 0) {
+    return "0";
+  }
+
+  return `${value > 0 ? "+" : ""}${value}`;
+}
+
+function formatLatencyDelta(value: number) {
+  if (value === 0) {
+    return "0 ms";
+  }
+
+  return `${value > 0 ? "+" : ""}${value} ms`;
+}
+
 export function SpecPilotWorkbench() {
   const [rawSpec, setRawSpec] = useState(demoSpecText);
   const [analysis, setAnalysis] = useState<NormalizedSpec | null>(null);
@@ -146,6 +217,27 @@ export function SpecPilotWorkbench() {
     authHeaderName: "Authorization",
     authPrefix: "Bearer",
   });
+  const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
+  const [historyReady, setHistoryReady] = useState(false);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [selectedBaselineId, setSelectedBaselineId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      setRunHistory(loadRunHistory());
+      setHistoryReady(true);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    if (!historyReady) {
+      return;
+    }
+
+    saveRunHistory(runHistory);
+  }, [historyReady, runHistory]);
 
   useEffect(() => {
     const sections = Array.from(document.querySelectorAll<HTMLElement>("[data-step-panel]"));
@@ -211,6 +303,7 @@ export function SpecPilotWorkbench() {
     setResults([]);
     setSummary(createEmptyRunSummary());
     setReport("");
+    setCurrentRunId(null);
   }
 
   function setBanner(message: string) {
@@ -331,14 +424,22 @@ export function SpecPilotWorkbench() {
       setResults([]);
       setSummary(createEmptyRunSummary());
       setReport("");
+      setCurrentRunId(null);
+      setSelectedBaselineId(null);
+
+      const hybridCount = data.plan.coverage.sources.hybrid;
+      const hybridLabel =
+        hybridCount > 0
+          ? ` Added ${hybridCount} promoted hybrid edge case${hybridCount === 1 ? "" : "s"}.`
+          : " No extra hybrid cases were promoted for this selection.";
 
       setBanner(
-        `Generated ${data.plan.testCases.length} test cases across ${data.plan.coverage.operationsCovered} operations.`,
+        `Generated ${data.plan.testCases.length} test cases across ${data.plan.coverage.operationsCovered} operations. Risk prioritization source: ${formatRiskSourceLabel(data.plan.riskMemoSource)}.${hybridLabel}`,
       );
 
       showToast({
         title: "Test plan generated.",
-        detail: "The generated suite is ready in Step 4. Scroll down to review the cases and the risk memo.",
+        detail: "Step 4 now includes the structured planning summary, risk cards, and the promoted edge cases.",
         actionLabel: "Open suite",
         actionTarget: "step-4",
       });
@@ -376,13 +477,30 @@ export function SpecPilotWorkbench() {
       setSummary(execution.summary);
       setReport(reportData.markdown);
 
+      const executedBaseUrl = runConfig.baseUrl.trim() || analysis.metadata.servers[0] || "";
+      const historyEntry = buildRunHistoryEntry({
+        spec: analysis,
+        plan,
+        results: execution.results,
+        summary: execution.summary,
+        strategy,
+        baseUrl: executedBaseUrl,
+      });
+      const defaultBaseline = findDefaultBaseline(runHistory, historyEntry);
+
+      setRunHistory((current) => insertRunHistoryEntry(current, historyEntry));
+      setCurrentRunId(historyEntry.id);
+      setSelectedBaselineId(defaultBaseline?.id ?? null);
+
       setBanner(
-        `Run complete: ${execution.summary.pass} passed, ${execution.summary.fail} failed, ${execution.summary.error} errored, ${execution.summary.skipped} skipped.`,
+        `Run complete: ${execution.summary.pass} passed, ${execution.summary.fail} failed, ${execution.summary.error} errored, ${execution.summary.skipped} skipped. This run is now saved in browser history for future diffing.`,
       );
 
       showToast({
         title: "Suite run complete.",
-        detail: "The execution board and markdown handoff are ready below. Scroll down to inspect the results.",
+        detail: defaultBaseline
+          ? "The execution board now includes a diff against the previous baseline, plus the saved run history."
+          : "This first checkpoint has been saved. Run the suite again later and SpecPilot will diff the results for you.",
         actionLabel: "View results",
         actionTarget: "step-5",
       });
@@ -431,9 +549,35 @@ export function SpecPilotWorkbench() {
     }
   }
 
+  function handleClearHistory() {
+    clearRunHistory();
+    setRunHistory([]);
+    setCurrentRunId(null);
+    setSelectedBaselineId(null);
+    setBanner("Saved run history was cleared from this browser.");
+  }
+
   const selectedVisibleCount = filteredOperations.filter((operation) =>
     selectedOperationIds.includes(operation.id),
   ).length;
+  const testCaseLookup = new Map(plan?.testCases.map((testCase) => [testCase.id, testCase]) ?? []);
+  const currentRunEntry =
+    currentRunId ? runHistory.find((entry) => entry.id === currentRunId) ?? null : null;
+  const automaticBaselineEntry = currentRunEntry ? findDefaultBaseline(runHistory, currentRunEntry) : null;
+  const selectedBaselineEntry =
+    currentRunEntry && selectedBaselineId
+      ? runHistory.find((entry) => entry.id === selectedBaselineId && entry.id !== currentRunId) ??
+        automaticBaselineEntry
+      : automaticBaselineEntry;
+  const runDiff =
+    currentRunEntry && selectedBaselineEntry
+      ? diffRunHistory(currentRunEntry, selectedBaselineEntry)
+      : null;
+  const historyAvailable = runHistory.length > 0;
+  const savedRunMeta =
+    runHistory.length > 0
+      ? `${runHistory.length} saved run${runHistory.length === 1 ? "" : "s"}`
+      : "No saved runs";
 
   const workflowSteps = [
     {
@@ -465,7 +609,9 @@ export function SpecPilotWorkbench() {
     {
       id: "step-4",
       label: "Generated suite",
-      meta: plan ? `${plan.testCases.length} cases ready for review` : "Appears after generation",
+      meta: plan
+        ? `${plan.testCases.length} cases ready, ${plan.coverage.sources.hybrid} hybrid`
+        : "Appears after generation",
       state: plan ? "done" : "locked",
     },
     {
@@ -474,10 +620,12 @@ export function SpecPilotWorkbench() {
       meta:
         results.length > 0
           ? `${summary.pass}/${summary.total} passing`
+          : historyAvailable
+            ? savedRunMeta
           : plan
             ? "Ready to execute"
             : "Unlocks after planning",
-      state: results.length > 0 ? "done" : plan ? "ready" : "locked",
+      state: results.length > 0 ? "done" : plan || historyAvailable ? "ready" : "locked",
     },
     {
       id: "step-6",
@@ -557,8 +705,8 @@ export function SpecPilotWorkbench() {
               />
               <MetricCard
                 icon={<Bot className="h-4 w-4" />}
-                label="AI assist"
-                value="Optional risk memos enrich the deterministic flow instead of replacing it."
+                label="Hybrid planner"
+                value="Deterministic parsing stays in control while AI can prioritize extra edge-case coverage when available."
               />
               <MetricCard
                 icon={<Bug className="h-4 w-4" />}
@@ -874,7 +1022,7 @@ export function SpecPilotWorkbench() {
             stage="03"
             status={
               plan
-                ? `${plan.testCases.length} test cases generated`
+                ? `${plan.testCases.length} cases ready, ${plan.coverage.sources.hybrid} hybrid`
                 : analysis
                   ? "Ready to generate"
                   : "Locked until selection"
@@ -946,14 +1094,14 @@ export function SpecPilotWorkbench() {
               <div className="mt-6 grid gap-3 lg:grid-cols-2">
                 <StrategyButton
                   active={strategy === "baseline"}
-                  body="Purely deterministic coverage derived from the contract."
+                  body="Purely contract-derived coverage with deterministic planning notes and no AI prioritization."
                   icon={<ClipboardList className="h-4 w-4" />}
                   onClick={() => setStrategy("baseline")}
                   title="Baseline suite"
                 />
                 <StrategyButton
                   active={strategy === "enhanced"}
-                  body="Adds an optional AI-generated risk memo on top of deterministic coverage."
+                  body="Keeps the deterministic core, promotes advanced edge cases, and optionally lets AI rank the riskiest additions."
                   icon={<Bot className="h-4 w-4" />}
                   onClick={() => setStrategy("enhanced")}
                   title="Enhanced suite"
@@ -1024,9 +1172,13 @@ export function SpecPilotWorkbench() {
           style={revealStyle(100)}
         >
           <StepHeader
-            description="Review the coverage mix, inspect the generated rationales, and make sure the suite shape feels intentional."
+            description="Review the coverage mix, inspect the structured risk priorities, and verify which advanced edge cases were promoted into runnable tests."
             stage="04"
-            status={plan ? `${plan.testCases.length} cases ready` : "Waiting for generated plan"}
+            status={
+              plan
+                ? `${plan.testCases.length} cases ready, ${plan.coverage.sources.hybrid} hybrid`
+                : "Waiting for generated plan"
+            }
             title="Inspect the generated suite"
           />
 
@@ -1036,6 +1188,8 @@ export function SpecPilotWorkbench() {
                 <div className="stats-fluid-grid">
                   <MetricStat label="Operations" value={String(plan.coverage.operationsCovered)} />
                   <MetricStat label="Cases" value={String(plan.coverage.totalCases)} />
+                  <MetricStat label="Deterministic" value={String(plan.coverage.sources.deterministic)} />
+                  <MetricStat label="Hybrid" value={String(plan.coverage.sources.hybrid)} />
                   <MetricStat label="Happy" value={String(plan.coverage.categories.happy)} />
                   <MetricStat label="Validation" value={String(plan.coverage.categories.validation)} />
                   <MetricStat label="Auth" value={String(plan.coverage.categories.auth)} />
@@ -1043,19 +1197,60 @@ export function SpecPilotWorkbench() {
                 </div>
 
                 <div className="rounded-[1.65rem] border border-border bg-white/5 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.2em] text-copy-muted">
+                        <Bot className="h-4 w-4 text-accent" />
+                        Planning summary
+                      </div>
+                      <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-copy-muted">
+                        Risk source: {formatRiskSourceLabel(plan.riskMemoSource)}
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-accent/25 bg-accent-soft px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+                      {formatRiskSourceContext(plan.riskMemoSource)}
+                    </span>
+                  </div>
+                  <p className="mt-4 text-sm leading-7 text-copy-muted">
+                    {plan.planSummary ??
+                      "The generated plan is ready. Review the structured priorities and confirm the suite mix feels intentional before you run it."}
+                  </p>
+                </div>
+
+                <div className="grid gap-3">
+                  {plan.riskInsights.map((insight) => (
+                    <RiskInsightCard
+                      insight={insight}
+                      key={insight.id}
+                    />
+                  ))}
+                </div>
+
+                <div className="rounded-[1.65rem] border border-border bg-white/5 p-5">
                   <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.2em] text-copy-muted">
-                    <Bot className="h-4 w-4 text-accent" />
-                    Risk memo ({plan.riskMemoSource})
+                    <Sparkles className="h-4 w-4 text-accent" />
+                    Promoted edge cases
                   </div>
-                  <div className="mt-4 whitespace-pre-wrap text-sm leading-7 text-copy-muted">
-                    {plan.riskMemo ??
-                      "AI enhancement is disabled for this plan. The deterministic suite is still fully usable."}
-                  </div>
+
+                  {plan.hybridScenarios.length > 0 ? (
+                    <div className="mt-4 grid gap-3">
+                      {plan.hybridScenarios.map((scenario) => (
+                        <HybridScenarioCard
+                          key={scenario.id}
+                          scenario={scenario}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm leading-7 text-copy-muted">
+                      No additional hybrid edge cases were promoted for this selection, so the suite stays on the deterministic core.
+                    </p>
+                  )}
                 </div>
               </div>
 
               <div className="min-w-0">
-                <div className="max-h-[38rem] space-y-3 overflow-y-auto pr-1">
+                <div className="space-y-3 pr-1">
                   {plan.testCases.map((testCase) => (
                     <div
                       className="rounded-[1.55rem] border border-border bg-panel px-5 py-5"
@@ -1063,9 +1258,16 @@ export function SpecPilotWorkbench() {
                     >
                       <div className="flex flex-wrap items-center gap-2">
                         <MethodBadge method={testCase.method} />
+                        <SourceBadge source={testCase.source} />
+                        {testCase.priority ? <PriorityBadge priority={testCase.priority} /> : null}
                         <span className="rounded-full border border-border px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-copy-muted">
                           {testCase.category}
                         </span>
+                        {testCase.mutation ? (
+                          <span className="rounded-full border border-accent/20 bg-accent-soft px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-accent">
+                            {testCase.mutation.replace(/_/g, " ")}
+                          </span>
+                        ) : null}
                         <span className="text-sm font-semibold text-copy">{testCase.name}</span>
                       </div>
 
@@ -1091,7 +1293,7 @@ export function SpecPilotWorkbench() {
             <EmptyState
               icon={<ClipboardList className="h-5 w-5 text-accent" />}
               title="Generate a plan to inspect the suite"
-              body="The workbench will show a stable, full-width summary of coverage and every generated test case once the plan is created."
+              body="The workbench will show the planning summary, structured risk cards, promoted hybrid edge cases, and every runnable test case once the plan is created."
             />
           )}
         </section>
@@ -1106,9 +1308,15 @@ export function SpecPilotWorkbench() {
           style={revealStyle(130)}
         >
           <StepHeader
-            description="Run results include contract alignment, latency, response previews, and enough detail to debug immediately."
+            description="Run results now capture execution evidence, saved checkpoints, and diffing against prior baselines without breaking the main execution flow."
             stage="05"
-            status={summary.total > 0 ? `${summary.pass} / ${summary.total} passing` : "Awaiting first run"}
+            status={
+              summary.total > 0
+                ? `${summary.pass} / ${summary.total} passing`
+                : historyAvailable
+                  ? savedRunMeta
+                  : "Awaiting first run"
+            }
             title="Execution board"
           />
 
@@ -1124,56 +1332,279 @@ export function SpecPilotWorkbench() {
             />
           </div>
 
-          {results.length > 0 ? (
-            <div className="mt-6 max-h-[38rem] space-y-3 overflow-y-auto pr-1">
-              {results.map((result) => (
-                <div
-                  className="min-w-0 rounded-[1.55rem] border border-border bg-panel px-5 py-5"
-                  key={result.testCaseId}
-                >
-                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                    <div className="min-w-0 space-y-3">
-                      <div className="flex flex-wrap items-center gap-3">
-                        <StatusBadge status={result.status} />
-                        <span className="font-mono text-xs uppercase tracking-[0.2em] text-copy-muted">
-                          {result.method.toUpperCase()}
-                        </span>
-                      </div>
-                      <p className="min-w-0 break-all font-mono text-sm leading-7 text-copy">
-                        {result.requestUrl}
-                      </p>
+          {historyAvailable || currentRunEntry ? (
+            <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.08fr)_22rem]">
+              <div className="rounded-[1.65rem] border border-border bg-white/5 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.2em] text-copy-muted">
+                      <Gauge className="h-4 w-4 text-accent" />
+                      Run diff
                     </div>
-
-                    <div className="grid gap-2 text-xs text-copy-muted sm:grid-cols-3">
-                      <span className="rounded-full border border-border px-3 py-2">
-                        Expected: {result.expectedStatusPatterns.join(", ")}
-                      </span>
-                      <span className="rounded-full border border-border px-3 py-2">
-                        Actual: {result.actualStatus ?? "n/a"}
-                      </span>
-                      <span className="rounded-full border border-border px-3 py-2">
-                        Latency: {result.latencyMs ?? 0} ms
-                      </span>
-                    </div>
+                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-copy-muted">
+                      {selectedBaselineEntry
+                        ? `Baseline: ${formatRunTimestamp(selectedBaselineEntry.createdAt)}`
+                        : "Baseline will appear after a comparable saved run exists"}
+                    </p>
                   </div>
-
-                  <p className="mt-4 text-sm leading-7 text-copy-muted">
-                    {result.mismatchReason ?? "Matched the expected contract."}
-                  </p>
-
-                  {result.responsePreview ? (
-                    <pre className="report-block mt-4 text-xs text-copy-muted">
-                      {result.responsePreview}
-                    </pre>
+                  {runDiff ? (
+                    <span className="rounded-full border border-accent/25 bg-accent-soft px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+                      {runDiff.changedCount} changed
+                    </span>
                   ) : null}
                 </div>
-              ))}
+
+                {runDiff ? (
+                  <>
+                    <p className="mt-4 text-sm leading-7 text-copy-muted">
+                      Comparing the current execution against{" "}
+                      <span className="font-semibold text-copy">{runDiff.baselineLabel}</span> from{" "}
+                      <span className="font-semibold text-copy">
+                        {formatRunTimestamp(runDiff.baselineCreatedAt)}
+                      </span>
+                      .
+                    </p>
+
+                    <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                      <DiffMetric
+                        label="Pass"
+                        tone={runDiff.passDelta > 0 ? "good" : runDiff.passDelta < 0 ? "bad" : "neutral"}
+                        value={formatDelta(runDiff.passDelta)}
+                      />
+                      <DiffMetric
+                        label="Fail"
+                        tone={runDiff.failDelta > 0 ? "bad" : runDiff.failDelta < 0 ? "good" : "neutral"}
+                        value={formatDelta(runDiff.failDelta)}
+                      />
+                      <DiffMetric
+                        label="Error"
+                        tone={runDiff.errorDelta > 0 ? "bad" : runDiff.errorDelta < 0 ? "good" : "neutral"}
+                        value={formatDelta(runDiff.errorDelta)}
+                      />
+                      <DiffMetric
+                        label="Skipped"
+                        tone={runDiff.skippedDelta > 0 ? "bad" : runDiff.skippedDelta < 0 ? "good" : "neutral"}
+                        value={formatDelta(runDiff.skippedDelta)}
+                      />
+                      <DiffMetric
+                        label="Avg latency"
+                        tone={
+                          runDiff.averageLatencyDeltaMs < 0
+                            ? "good"
+                            : runDiff.averageLatencyDeltaMs > 0
+                              ? "bad"
+                              : "neutral"
+                        }
+                        value={formatLatencyDelta(runDiff.averageLatencyDeltaMs)}
+                      />
+                    </div>
+
+                    <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                      <DiffChangeList
+                        emptyMessage="No fresh regressions versus the selected baseline."
+                        items={runDiff.regressions}
+                        title={`Regressions (${runDiff.regressions.length})`}
+                        tone="bad"
+                      />
+                      <DiffChangeList
+                        emptyMessage="No recovered tests yet in this comparison."
+                        items={runDiff.recoveries}
+                        title={`Recoveries (${runDiff.recoveries.length})`}
+                        tone="good"
+                      />
+                    </div>
+
+                    <div className="mt-4 rounded-[1.35rem] border border-border bg-panel px-4 py-4">
+                      <div className="flex flex-wrap gap-2 text-xs text-copy-muted">
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Status changes: {runDiff.statusChanges.length}
+                        </span>
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Added cases: {runDiff.addedCases.length}
+                        </span>
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Removed cases: {runDiff.removedCases.length}
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                ) : currentRunEntry ? (
+                  <p className="mt-4 text-sm leading-7 text-copy-muted">
+                    This run has been saved as a checkpoint. Once you generate another comparable run,
+                    SpecPilot will show regressions, recoveries, suite changes, and metric deltas here.
+                  </p>
+                ) : (
+                  <p className="mt-4 text-sm leading-7 text-copy-muted">
+                    Saved checkpoints are available in this browser. Run the suite again to unlock a
+                    live comparison against one of those baselines.
+                  </p>
+                )}
+              </div>
+
+              <div className="rounded-[1.65rem] border border-border bg-white/5 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.2em] text-copy-muted">
+                      <ClipboardList className="h-4 w-4 text-accent" />
+                      Run history
+                    </div>
+                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-copy-muted">
+                      Saved in this browser
+                    </p>
+                  </div>
+                  {historyAvailable ? (
+                    <button
+                      className="action-pill action-pill--quiet px-3 py-2 text-xs"
+                      onClick={handleClearHistory}
+                      type="button"
+                    >
+                      Clear history
+                    </button>
+                  ) : null}
+                </div>
+
+                {historyAvailable ? (
+                  <div className="mt-4 max-h-[32rem] space-y-3 overflow-y-auto pr-1">
+                    {runHistory.map((entry) => {
+                      const isCurrent = currentRunId === entry.id;
+                      const isSelectedBaseline = selectedBaselineEntry?.id === entry.id && !isCurrent;
+
+                      return (
+                        <div
+                          className="rounded-[1.35rem] border border-border bg-panel px-4 py-4"
+                          key={entry.id}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-copy">{entry.apiTitle}</p>
+                              <p className="mt-1 text-xs uppercase tracking-[0.16em] text-copy-muted">
+                                {formatRunTimestamp(entry.createdAt)}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <span className="rounded-full border border-border px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-copy-muted">
+                                {entry.strategy}
+                              </span>
+                              {isCurrent ? (
+                                <span className="rounded-full border border-accent/25 bg-accent-soft px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-accent">
+                                  Current
+                                </span>
+                              ) : null}
+                              {isSelectedBaseline ? (
+                                <span className="rounded-full border border-accent/25 bg-accent-soft px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-accent">
+                                  Baseline
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          <div className="mt-4 flex flex-wrap gap-2 text-xs text-copy-muted">
+                            <span className="rounded-full border border-border px-3 py-2">
+                              Pass: {entry.summary.pass}
+                            </span>
+                            <span className="rounded-full border border-border px-3 py-2">
+                              Fail: {entry.summary.fail}
+                            </span>
+                            <span className="rounded-full border border-border px-3 py-2">
+                              Ops: {entry.coverage.operationsCovered}
+                            </span>
+                            <span className="rounded-full border border-border px-3 py-2">
+                              Cases: {entry.coverage.totalCases}
+                            </span>
+                          </div>
+
+                          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                            <p className="text-xs uppercase tracking-[0.16em] text-copy-muted">
+                              Risk source: {formatRiskSourceLabel(entry.riskMemoSource)}
+                            </p>
+                            {currentRunEntry && !isCurrent ? (
+                              <button
+                                className="action-pill action-pill--quiet px-3 py-2 text-xs"
+                                onClick={() => setSelectedBaselineId(entry.id)}
+                                type="button"
+                              >
+                                {isSelectedBaseline ? "Baseline selected" : "Use as baseline"}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="mt-4 text-sm leading-7 text-copy-muted">
+                    Saved runs will appear here after the first suite execution.
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {results.length > 0 ? (
+            <div className="mt-6 max-h-[38rem] space-y-3 overflow-y-auto pr-1">
+              {results.map((result) => {
+                const linkedTestCase = testCaseLookup.get(result.testCaseId);
+
+                return (
+                  <div
+                    className="min-w-0 rounded-[1.55rem] border border-border bg-panel px-5 py-5"
+                    key={result.testCaseId}
+                  >
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                      <div className="min-w-0 space-y-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <StatusBadge status={result.status} />
+                          {linkedTestCase ? <SourceBadge source={linkedTestCase.source} /> : null}
+                          {linkedTestCase?.priority ? (
+                            <PriorityBadge priority={linkedTestCase.priority} />
+                          ) : null}
+                          <span className="font-mono text-xs uppercase tracking-[0.2em] text-copy-muted">
+                            {result.method.toUpperCase()}
+                          </span>
+                        </div>
+                        <p className="text-sm font-semibold text-copy">
+                          {linkedTestCase?.name ?? result.testCaseId}
+                        </p>
+                        <p className="min-w-0 break-all font-mono text-sm leading-7 text-copy">
+                          {result.requestUrl}
+                        </p>
+                      </div>
+
+                      <div className="grid gap-2 text-xs text-copy-muted sm:grid-cols-3">
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Expected: {result.expectedStatusPatterns.join(", ")}
+                        </span>
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Actual: {result.actualStatus ?? "n/a"}
+                        </span>
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Latency: {result.latencyMs ?? 0} ms
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="mt-4 text-sm leading-7 text-copy-muted">
+                      {result.mismatchReason ?? "Matched the expected contract."}
+                    </p>
+
+                    {result.responsePreview ? (
+                      <pre className="report-block mt-4 text-xs text-copy-muted">
+                        {result.responsePreview}
+                      </pre>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <EmptyState
               icon={<Play className="h-5 w-5 text-accent" />}
               title="No results yet"
-              body="Run the generated suite against a live API to populate this board with pass or fail evidence and latency snapshots."
+              body={
+                historyAvailable
+                  ? "Saved checkpoints are ready. Run the suite again to populate the live execution board and unlock run-to-run diffing."
+                  : "Run the generated suite against a live API to populate this board with pass or fail evidence and latency snapshots."
+              }
             />
           )}
         </section>
@@ -1679,6 +2110,193 @@ function StrategyButton({
       </div>
       <p className="mt-3 text-sm leading-7 text-copy-muted">{body}</p>
     </button>
+  );
+}
+
+function DiffMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "good" | "bad" | "neutral";
+}) {
+  const toneClass =
+    tone === "good"
+      ? "text-[#bff7d1]"
+      : tone === "bad"
+        ? "text-[#ffd3e8]"
+        : "text-copy";
+
+  return (
+    <div className="rounded-[1.25rem] border border-border bg-panel px-4 py-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-copy-muted">
+        {label}
+      </div>
+      <div className={`mt-3 text-lg font-semibold ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function DiffChangeList({
+  title,
+  items,
+  emptyMessage,
+  tone,
+}: {
+  title: string;
+  items: RunHistoryDiff["regressions"];
+  emptyMessage: string;
+  tone: "good" | "bad";
+}) {
+  const toneClass = tone === "good" ? "text-[#bff7d1]" : "text-[#ffd3e8]";
+
+  return (
+    <div className="rounded-[1.35rem] border border-border bg-panel px-4 py-4">
+      <p className="text-sm font-semibold text-copy">{title}</p>
+
+      {items.length > 0 ? (
+        <div className="mt-4 space-y-3">
+          {items.slice(0, 4).map((item) => (
+            <div
+              className="rounded-[1.05rem] border border-border bg-white/5 px-3 py-3"
+              key={`${item.testCaseId}-${item.previousStatus ?? "none"}-${item.currentStatus ?? "none"}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <MethodBadge method={item.method} />
+                <SourceBadge source={item.source} />
+                {item.priority ? <PriorityBadge priority={item.priority} /> : null}
+              </div>
+              <p className="mt-3 text-sm font-semibold text-copy">{item.name}</p>
+              <p className="mt-2 text-xs uppercase tracking-[0.16em] text-copy-muted">
+                {item.path}
+              </p>
+              <p className={`mt-3 text-sm font-semibold ${toneClass}`}>
+                {item.previousStatus ?? "missing"}
+                {" -> "}
+                {item.currentStatus ?? "missing"}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 text-sm leading-7 text-copy-muted">{emptyMessage}</p>
+      )}
+    </div>
+  );
+}
+
+function SourceBadge({ source }: { source: TestCaseSource }) {
+  return (
+    <span
+      className={`rounded-full px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${
+        source === "hybrid"
+          ? "border border-accent/25 bg-accent-soft text-accent"
+          : "border border-border text-copy-muted"
+      }`}
+    >
+      {source === "hybrid" ? "Hybrid" : "Deterministic"}
+    </span>
+  );
+}
+
+function SeverityBadge({ severity }: { severity: RiskInsight["severity"] }) {
+  const tone =
+    severity === "critical"
+      ? "border-danger/30 bg-danger/10 text-[#ffd0eb]"
+      : severity === "high"
+        ? "border-warning/30 bg-warning/10 text-[#f9deb1]"
+        : severity === "medium"
+          ? "border-accent/25 bg-accent-soft text-accent"
+          : "border-border text-copy-muted";
+
+  return (
+    <span
+      className={`rounded-full border px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${tone}`}
+    >
+      {severity}
+    </span>
+  );
+}
+
+function PriorityBadge({ priority }: { priority: HybridScenario["priority"] | NonNullable<TestCase["priority"]> }) {
+  const tone =
+    priority === "high"
+      ? "border-warning/30 bg-warning/10 text-[#f9deb1]"
+      : priority === "medium"
+        ? "border-accent/25 bg-accent-soft text-accent"
+        : "border-border text-copy-muted";
+
+  return (
+    <span
+      className={`rounded-full border px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${tone}`}
+    >
+      {priority} priority
+    </span>
+  );
+}
+
+function RiskInsightCard({ insight }: { insight: RiskInsight }) {
+  return (
+    <div className="rounded-[1.55rem] border border-border bg-white/5 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-copy">{insight.title}</p>
+          <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-copy-muted">
+            Operations: {insight.operationIds.join(", ")}
+          </p>
+        </div>
+        <SeverityBadge severity={insight.severity} />
+      </div>
+
+      <p className="mt-3 text-sm leading-7 text-copy-muted">{insight.reasoning}</p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {insight.suggestedChecks.map((check) => (
+          <span
+            className="rounded-full border border-border px-3 py-2 text-xs text-copy-muted"
+            key={check}
+          >
+            {check}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HybridScenarioCard({ scenario }: { scenario: HybridScenario }) {
+  return (
+    <div className="rounded-[1.45rem] border border-border bg-panel px-4 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <PriorityBadge priority={scenario.priority} />
+        <span className="rounded-full border border-accent/20 bg-accent-soft px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-accent">
+          {scenario.source === "fallback"
+            ? "Fallback-picked"
+            : scenario.source === "gemini"
+              ? "Gemini-picked"
+              : "OpenAI-picked"}
+        </span>
+        <span className="rounded-full border border-border px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-copy-muted">
+          {scenario.mutation.replace(/_/g, " ")}
+        </span>
+      </div>
+
+      <p className="mt-3 text-sm font-semibold text-copy">{scenario.title}</p>
+      <p className="mt-2 text-sm leading-7 text-copy-muted">{scenario.rationale}</p>
+
+      <div className="mt-4 flex flex-wrap gap-2 text-xs text-copy-muted">
+        <span className="rounded-full border border-border px-3 py-2">
+          Operation: {scenario.operationId}
+        </span>
+        {scenario.fieldPath ? (
+          <span className="rounded-full border border-border px-3 py-2">
+            Field: <span className="font-mono">{scenario.fieldPath}</span>
+          </span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

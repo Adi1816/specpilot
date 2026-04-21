@@ -15,6 +15,26 @@ export type HttpMethod = (typeof httpMethods)[number];
 export const testCategoryValues = ["happy", "validation", "auth", "discovery"] as const;
 export type TestCategory = (typeof testCategoryValues)[number];
 
+export const testCaseSourceValues = ["deterministic", "hybrid"] as const;
+export type TestCaseSource = (typeof testCaseSourceValues)[number];
+
+export const riskSeverityValues = ["critical", "high", "medium", "low"] as const;
+export type RiskSeverity = (typeof riskSeverityValues)[number];
+
+export const scenarioPriorityValues = ["high", "medium", "low"] as const;
+export type ScenarioPriority = (typeof scenarioPriorityValues)[number];
+
+export const hybridMutationValues = [
+  "invalid_enum",
+  "invalid_type",
+  "boundary_violation",
+  "unsupported_media_type",
+] as const;
+export type HybridMutationType = (typeof hybridMutationValues)[number];
+
+export const hybridTargetLocationValues = ["body", "query", "contentType"] as const;
+export type HybridTargetLocation = (typeof hybridTargetLocationValues)[number];
+
 export type JsonSchemaObject = {
   type?: string | string[];
   format?: string;
@@ -123,23 +143,55 @@ export interface TestCase {
   request: RequestBlueprint;
   requiresAuth: boolean;
   authHint?: AuthHint;
+  source: TestCaseSource;
+  priority?: ScenarioPriority;
+  mutation?: HybridMutationType;
 }
 
 export interface CoverageSummary {
   operationsCovered: number;
   totalCases: number;
   categories: Record<TestCategory, number>;
+  sources: Record<TestCaseSource, number>;
 }
 
 export type StrategyMode = "baseline" | "enhanced";
-export type RiskMemoSource = "openai" | "fallback" | "disabled";
+export const riskMemoSourceValues = ["gemini", "openai", "fallback", "disabled"] as const;
+export type RiskMemoSource = (typeof riskMemoSourceValues)[number];
+
+export interface RiskInsight {
+  id: string;
+  title: string;
+  severity: RiskSeverity;
+  reasoning: string;
+  operationIds: string[];
+  suggestedChecks: string[];
+}
+
+export interface HybridScenario {
+  id: string;
+  candidateId: string;
+  operationId: string;
+  title: string;
+  rationale: string;
+  mutation: HybridMutationType;
+  category: TestCategory;
+  priority: ScenarioPriority;
+  location: HybridTargetLocation;
+  fieldPath?: string;
+  source: Exclude<RiskMemoSource, "disabled">;
+  testCaseId: string;
+}
 
 export interface TestPlan {
   selectedOperationIds: string[];
   testCases: TestCase[];
   coverage: CoverageSummary;
+  planSummary?: string;
   riskMemo?: string;
   riskMemoSource: RiskMemoSource;
+  riskInsights: RiskInsight[];
+  hybridScenarios: HybridScenario[];
 }
 
 export interface RunConfig {
@@ -149,6 +201,7 @@ export interface RunConfig {
   authPrefix?: string;
 }
 
+export const testStatusValues = ["pass", "fail", "error", "skipped"] as const;
 export type TestStatus = "pass" | "fail" | "error" | "skipped";
 
 export interface TestResult {
@@ -172,6 +225,71 @@ export interface RunSummary {
   error: number;
   skipped: number;
   averageLatencyMs: number;
+}
+
+export interface RunHistoryCase {
+  testCaseId: string;
+  operationId: string;
+  name: string;
+  method: HttpMethod;
+  path: string;
+  category: TestCategory;
+  source: TestCaseSource;
+  priority?: ScenarioPriority;
+  mutation?: HybridMutationType;
+  status: TestStatus;
+  actualStatus?: number;
+  expectedStatusPatterns: string[];
+  latencyMs?: number;
+}
+
+export interface RunHistoryEntry {
+  id: string;
+  createdAt: string;
+  apiTitle: string;
+  apiVersion: string;
+  strategy: StrategyMode;
+  riskMemoSource: RiskMemoSource;
+  baseUrl: string;
+  selectedOperationIds: string[];
+  coverage: CoverageSummary;
+  summary: RunSummary;
+  planSummary?: string;
+  cases: RunHistoryCase[];
+}
+
+export interface RunHistoryCaseChange {
+  testCaseId: string;
+  name: string;
+  method: HttpMethod;
+  path: string;
+  source: TestCaseSource;
+  priority?: ScenarioPriority;
+  mutation?: HybridMutationType;
+  previousStatus?: TestStatus;
+  currentStatus?: TestStatus;
+  previousActualStatus?: number;
+  currentActualStatus?: number;
+  previousLatencyMs?: number;
+  currentLatencyMs?: number;
+}
+
+export interface RunHistoryDiff {
+  baselineId: string;
+  baselineCreatedAt: string;
+  baselineLabel: string;
+  totalDelta: number;
+  passDelta: number;
+  failDelta: number;
+  errorDelta: number;
+  skippedDelta: number;
+  averageLatencyDeltaMs: number;
+  changedCount: number;
+  regressions: RunHistoryCaseChange[];
+  recoveries: RunHistoryCaseChange[];
+  addedCases: RunHistoryCaseChange[];
+  removedCases: RunHistoryCaseChange[];
+  statusChanges: RunHistoryCaseChange[];
 }
 
 export const analyzeSpecInputSchema = z.object({

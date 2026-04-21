@@ -24,7 +24,7 @@ That path shows the full end-to-end product without requiring any external API.
 1. Accepts an OpenAPI 3.x or Swagger 2.0 file in JSON or YAML.
 2. Normalizes the contract into typed operations, parameters, request bodies, responses, and security hints.
 3. Lets the user choose which endpoints to include in the first pass.
-4. Generates a deterministic test suite with optional AI risk commentary.
+4. Generates a deterministic test suite with optional Gemini-powered risk prioritization.
 5. Executes the suite against a real base URL.
 6. Produces a markdown report with coverage, outcomes, latency, and failure evidence.
 
@@ -41,7 +41,7 @@ That path shows the full end-to-end product without requiring any external API.
 - Normalize operations, schemas, security schemes, and response expectations.
 - Filter and select endpoints for a deliberate first-pass suite.
 - Generate deterministic test cases across happy-path, validation, auth, and missing-resource scenarios.
-- Optionally generate an AI memo when `OPENAI_API_KEY` is configured.
+- Optionally generate Gemini-powered planning insights when `GEMINI_API_KEY` is configured.
 - Execute tests against a live API target with auth-aware request construction.
 - Capture expected versus actual status patterns, latency, and response previews.
 - Export a markdown handoff for issues, PR comments, QA summaries, or demos.
@@ -71,7 +71,7 @@ flowchart TD
   E --> F["POST /api/tests/generate"]
   F --> G["generateTestPlan()"]
   G --> H["Deterministic test cases"]
-  G --> I["Optional AI risk memo"]
+  G --> I["Optional Gemini risk planner"]
   H --> J["POST /api/tests/run"]
   J --> K["runTestPlan()"]
   K --> L["Target API"]
@@ -89,7 +89,7 @@ flowchart TD
 - Tailwind CSS v4
 - Zod
 - YAML
-- OpenAI Responses API for the optional risk memo
+- Gemini API for optional structured planning and risk prioritization
 
 ## Quick Start
 
@@ -107,14 +107,14 @@ cp .env.example .env.local
 
 ### 3. Add optional AI credentials
 
-If you want the enhanced risk memo, set:
+If you want the enhanced Gemini planner, set:
 
 ```env
-OPENAI_API_KEY=your_key_here
-OPENAI_MODEL=gpt-4.1-mini
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
-If you skip the API key, the app still works fully and falls back to a deterministic memo.
+If you skip the API key, the app still works fully and falls back to deterministic planning.
 
 ### 4. Start the dev server
 
@@ -151,8 +151,8 @@ This gives you a complete end-to-end walkthrough without relying on any external
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | No | Enables the optional AI-generated risk memo in the enhanced strategy |
-| `OPENAI_MODEL` | No | Overrides the default model used for the optional memo. Defaults to `gpt-4.1-mini` |
+| `GEMINI_API_KEY` | No | Enables the optional Gemini-powered planner in the enhanced strategy |
+| `GEMINI_MODEL` | No | Overrides the default Gemini model. Defaults to `gemini-2.5-flash` |
 
 ## Scripts
 

@@ -20,18 +20,18 @@ Make sure you have:
 
 1. A Git repository with the project pushed.
 2. A Vercel account connected to that repository.
-3. An optional OpenAI API key if you want the enhanced AI memo in production.
+3. An optional Gemini API key if you want the enhanced AI planner in production.
 
 ## Environment Variables
 
-Set these in Vercel only if you want AI memo support:
+Set these in Vercel only if you want Gemini planner support:
 
 | Variable | Required | Notes |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | No | Enables the optional AI risk memo |
-| `OPENAI_MODEL` | No | Defaults to `gpt-4.1-mini` if omitted |
+| `GEMINI_API_KEY` | No | Enables the optional Gemini planner |
+| `GEMINI_MODEL` | No | Defaults to `gemini-2.5-flash` if omitted |
 
-If `OPENAI_API_KEY` is not set, the app still works and falls back to a deterministic memo.
+If `GEMINI_API_KEY` is not set, the app still works and falls back to deterministic planning.
 
 ## Vercel Deployment Steps
 
@@ -52,10 +52,10 @@ Recommended defaults:
 
 ### 3. Add environment variables
 
-If you want the enhanced AI memo:
+If you want the enhanced AI planner:
 
-- add `OPENAI_API_KEY`
-- optionally add `OPENAI_MODEL`
+- add `GEMINI_API_KEY`
+- optionally add `GEMINI_MODEL`
 
 ### 4. Deploy
 
@@ -91,7 +91,7 @@ Run this exact smoke test on the deployed URL:
 9. Confirm the markdown handoff is generated.
 10. Click `Copy report` and verify the clipboard confirmation appears.
 
-If `OPENAI_API_KEY` is configured, also confirm the plan includes the enhanced memo path.
+If `GEMINI_API_KEY` is configured, also confirm the plan includes the enhanced planner path.
 
 ## Production Readiness Checklist
 
@@ -100,7 +100,7 @@ If `OPENAI_API_KEY` is configured, also confirm the plan includes the enhanced m
 - `npm run build` passes
 - The bundled demo flow works on the deployed domain
 - The copy-to-clipboard action succeeds in the browser
-- The enhanced strategy is tested with and without the OpenAI key
+- The enhanced strategy is tested with and without the Gemini key
 - The README clearly explains the project and local setup
 
 ## Important Deployment Notes
@@ -138,11 +138,11 @@ if the actual endpoints live under `/v1`.
 
 ## Common Issues
 
-### The AI memo is missing
+### The AI planner is missing
 
 Likely cause:
 
-- `OPENAI_API_KEY` is not set
+- `GEMINI_API_KEY` is not set
 - the API key is invalid
 - the model call failed and the app fell back gracefully
 

@@ -55,7 +55,7 @@ Built and deployed SpecPilot, an AI-assisted API testing copilot that turns Open
 
 The part I cared about most was keeping the product grounded in the uploaded contract instead of turning it into a generic chatbot. The app parses the spec, lets the user scope endpoints, generates deterministic checks, runs them against live APIs, and drafts a shareable handoff at the end.
 
-Tech stack: Next.js, React, TypeScript, Tailwind, Zod, OpenAPI parsing, and optional OpenAI-powered risk analysis.
+Tech stack: Next.js, React, TypeScript, Tailwind, Zod, OpenAPI parsing, and optional Gemini-powered risk analysis.
 
 Live demo: https://specpilot-ruby.vercel.app/
 GitHub: https://github.com/Adi1816/specpilot
@@ -70,7 +70,7 @@ Use this if you want a tighter post:
 ```text
 Shipped SpecPilot: an AI-assisted API testing copilot that turns OpenAPI files into generated test suites, live execution dashboards, and markdown bug reports.
 
-Built with Next.js, TypeScript, and optional OpenAI-powered risk analysis.
+Built with Next.js, TypeScript, and optional Gemini-powered risk analysis.
 
 Live: https://specpilot-ruby.vercel.app/
 Repo: https://github.com/Adi1816/specpilot
