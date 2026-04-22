@@ -18,6 +18,9 @@ export type TestCategory = (typeof testCategoryValues)[number];
 export const testCaseSourceValues = ["deterministic", "hybrid"] as const;
 export type TestCaseSource = (typeof testCaseSourceValues)[number];
 
+export const testPackValues = ["security", "resilience"] as const;
+export type TestPack = (typeof testPackValues)[number];
+
 export const riskSeverityValues = ["critical", "high", "medium", "low"] as const;
 export type RiskSeverity = (typeof riskSeverityValues)[number];
 
@@ -29,11 +32,23 @@ export const hybridMutationValues = [
   "invalid_type",
   "boundary_violation",
   "unsupported_media_type",
+  "nullability_violation",
+  "unexpected_property",
+  "auth_tamper",
 ] as const;
 export type HybridMutationType = (typeof hybridMutationValues)[number];
 
-export const hybridTargetLocationValues = ["body", "query", "contentType"] as const;
+export const hybridTargetLocationValues = ["body", "query", "contentType", "auth"] as const;
 export type HybridTargetLocation = (typeof hybridTargetLocationValues)[number];
+
+export const specLintCategoryValues = [
+  "examples",
+  "schema",
+  "error_coverage",
+  "security",
+  "documentation",
+] as const;
+export type SpecLintCategory = (typeof specLintCategoryValues)[number];
 
 export type JsonSchemaObject = {
   type?: string | string[];
@@ -129,6 +144,12 @@ export interface RequestBlueprint {
   body?: unknown;
   contentType?: string;
   omitAuth?: boolean;
+  authOverride?: {
+    placement: "header" | "query";
+    value: string;
+    name?: string;
+    prefix?: string;
+  };
 }
 
 export interface TestCase {
@@ -144,6 +165,7 @@ export interface TestCase {
   requiresAuth: boolean;
   authHint?: AuthHint;
   source: TestCaseSource;
+  pack?: TestPack;
   priority?: ScenarioPriority;
   mutation?: HybridMutationType;
 }
@@ -153,6 +175,7 @@ export interface CoverageSummary {
   totalCases: number;
   categories: Record<TestCategory, number>;
   sources: Record<TestCaseSource, number>;
+  packs: Record<TestPack, number>;
 }
 
 export type StrategyMode = "baseline" | "enhanced";
@@ -166,6 +189,23 @@ export interface RiskInsight {
   reasoning: string;
   operationIds: string[];
   suggestedChecks: string[];
+}
+
+export interface SpecLintFinding {
+  id: string;
+  title: string;
+  severity: RiskSeverity;
+  category: SpecLintCategory;
+  summary: string;
+  suggestion: string;
+  operationIds: string[];
+}
+
+export interface SpecLintSummary {
+  score: number;
+  totalFindings: number;
+  bySeverity: Record<RiskSeverity, number>;
+  byCategory: Record<SpecLintCategory, number>;
 }
 
 export interface HybridScenario {
@@ -187,6 +227,8 @@ export interface TestPlan {
   selectedOperationIds: string[];
   testCases: TestCase[];
   coverage: CoverageSummary;
+  specLintSummary: SpecLintSummary;
+  specLintFindings: SpecLintFinding[];
   planSummary?: string;
   riskMemo?: string;
   riskMemoSource: RiskMemoSource;
@@ -235,6 +277,7 @@ export interface RunHistoryCase {
   path: string;
   category: TestCategory;
   source: TestCaseSource;
+  pack?: TestPack;
   priority?: ScenarioPriority;
   mutation?: HybridMutationType;
   status: TestStatus;
@@ -264,6 +307,7 @@ export interface RunHistoryCaseChange {
   method: HttpMethod;
   path: string;
   source: TestCaseSource;
+  pack?: TestPack;
   priority?: ScenarioPriority;
   mutation?: HybridMutationType;
   previousStatus?: TestStatus;

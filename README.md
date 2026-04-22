@@ -24,9 +24,10 @@ That path shows the full end-to-end product without requiring any external API.
 1. Accepts an OpenAPI 3.x or Swagger 2.0 file in JSON or YAML.
 2. Normalizes the contract into typed operations, parameters, request bodies, responses, and security hints.
 3. Lets the user choose which endpoints to include in the first pass.
-4. Generates a deterministic test suite with optional Gemini-powered risk prioritization.
-5. Executes the suite against a real base URL.
-6. Produces a markdown report with coverage, outcomes, latency, and failure evidence.
+4. Scores the selected contract surface with deterministic linting before execution.
+5. Generates a layered suite with deterministic core cases, pack probes, and optional Gemini-prioritized hybrid edge cases.
+6. Executes the suite against a real base URL and stores browser-side checkpoints for comparison.
+7. Produces a markdown report with coverage, outcomes, latency, diff-ready evidence, and failure details.
 
 ## Why This Project Is Strong
 
@@ -41,11 +42,15 @@ That path shows the full end-to-end product without requiring any external API.
 - Normalize operations, schemas, security schemes, and response expectations.
 - Filter and select endpoints for a deliberate first-pass suite.
 - Generate deterministic test cases across happy-path, validation, auth, and missing-resource scenarios.
-- Optionally generate Gemini-powered planning insights when `GEMINI_API_KEY` is configured.
+- Score the contract with deterministic quality signals for examples, schema design, error coverage, security, and docs.
+- Add deterministic security and resilience pack probes in enhanced mode.
+- Optionally generate Gemini-powered planning insights and promoted hybrid edge cases when `GEMINI_API_KEY` is configured.
 - Execute tests against a live API target with auth-aware request construction.
+- Save execution checkpoints in browser history and diff the latest run against prior baselines.
 - Capture expected versus actual status patterns, latency, and response previews.
 - Export a markdown handoff for issues, PR comments, QA summaries, or demos.
 - Includes a built-in demo commerce API so the full experience works end to end without external infrastructure.
+- Includes premium 3D product scenes and a presentation-focused UI layer for portfolio demos.
 
 ## Product Flow
 
@@ -54,11 +59,22 @@ SpecPilot is intentionally structured as a guided six-step workflow:
 1. Load the contract
 2. Inspect and select the API surface area
 3. Configure the run
-4. Review the generated suite
-5. Inspect the execution board
+4. Review the generated suite, contract score, pack probes, and promoted hybrid scenarios
+5. Inspect the execution board, saved checkpoints, and baseline diffs
 6. Copy the markdown handoff
 
 The UI is built to feel like a premium product demo rather than a raw dashboard, while the underlying logic remains deterministic and inspectable.
+
+## Phase 1 Highlights
+
+Compared with the earlier version, the current Phase 1 build adds a much stronger product layer:
+
+- Deterministic contract linting with a surfaced contract score and issue breakdown.
+- A plan narrative that explains what the generated suite is optimized to catch.
+- Clear separation between deterministic pack probes and AI-prioritized hybrid scenarios.
+- Saved run history in the browser with baseline selection and run-to-run diffing.
+- Richer execution evidence so the workbench behaves more like a real QA/devtool product.
+- 3D portfolio scenes and polished workflow presentation for a stronger public demo.
 
 ## Architecture
 
@@ -70,15 +86,22 @@ flowchart TD
   D --> E["Normalized contract"]
   E --> F["POST /api/tests/generate"]
   F --> G["generateTestPlan()"]
-  G --> H["Deterministic test cases"]
-  G --> I["Optional Gemini risk planner"]
-  H --> J["POST /api/tests/run"]
-  J --> K["runTestPlan()"]
-  K --> L["Target API"]
-  K --> M["Execution results + summary"]
-  M --> N["POST /api/reports"]
-  N --> O["buildMarkdownReport()"]
-  O --> P["Markdown handoff"]
+  G --> H["Deterministic core test cases"]
+  G --> I["Spec lint scoring + findings"]
+  G --> J["Security / resilience pack probes"]
+  G --> K["Optional Gemini hybrid planner"]
+  H --> L["Runnable suite"]
+  I --> L
+  J --> L
+  K --> L
+  L --> M["POST /api/tests/run"]
+  M --> N["runTestPlan()"]
+  N --> O["Target API"]
+  N --> P["Execution results + summary"]
+  P --> Q["Browser run history + diff baseline"]
+  P --> R["POST /api/reports"]
+  R --> S["buildMarkdownReport()"]
+  S --> T["Markdown handoff"]
 ```
 
 ## Tech Stack
@@ -89,6 +112,7 @@ flowchart TD
 - Tailwind CSS v4
 - Zod
 - YAML
+- Three.js with React Three Fiber / Drei
 - Gemini API for optional structured planning and risk prioritization
 
 ## Quick Start
@@ -147,6 +171,8 @@ The app will automatically prefill:
 
 This gives you a complete end-to-end walkthrough without relying on any external service.
 
+If you run the suite multiple times, the latest build will also persist browser-side run history and unlock baseline diffing inside the execution board.
+
 ## Environment Variables
 
 | Variable | Required | Purpose |
@@ -179,10 +205,12 @@ src/
     layout.tsx          app metadata and fonts
     page.tsx            entry point for the workbench
   components/
-    spec-pilot-workbench.tsx
+    spec-pilot-3d-scenes.tsx  social orbit and executive 3D product scenes
+    spec-pilot-workbench.tsx  main guided workflow UI and execution board
   lib/
     openapi.ts          parsing, normalization, sample generation
-    test-engine.ts      suite generation, execution, and report creation
+    test-engine.ts      suite generation, spec linting, hybrid planning, execution, and report creation
+    run-history.ts      browser-side saved checkpoints and diffing helpers
     ai.ts               optional AI memo generation
     demo-spec.ts        bundled demo OpenAPI contract
     demo-api.ts         demo API helpers
@@ -204,16 +232,18 @@ If you are showcasing this project in an interview, README, or LinkedIn post, po
 You can also emphasize that the project demonstrates:
 
 - contract-aware product design
+- deterministic contract review and hybrid coverage planning
 - typed backend integration
 - deterministic evaluation
+- regression-oriented execution history and diffing
 - optional AI augmentation instead of AI dependence
 - clean UX thinking for technical workflows
 
 ## Suggested Resume Bullets
 
-- Built a Next.js and TypeScript application that converts OpenAPI contracts into deterministic API test suites, execution dashboards, and markdown QA reports.
-- Designed an AI-assisted workflow where model output is additive and grounded in contract-derived coverage rather than replacing deterministic test generation.
-- Implemented typed route handlers, contract normalization, auth-aware execution, and end-to-end reporting in a portfolio-ready engineering tool.
+- Built a Next.js and TypeScript application that converts OpenAPI contracts into layered API test suites, execution dashboards, baseline diffs, and markdown QA reports.
+- Designed a hybrid workflow where deterministic contract linting and pack probes stay in control while Gemini prioritizes only the highest-value edge cases.
+- Implemented typed route handlers, contract normalization, auth-aware execution, browser-side run history, and end-to-end reporting in a portfolio-ready engineering tool.
 
 For GitHub description text, LinkedIn copy, demo scripts, and presentation-ready project messaging, see [PORTFOLIO_ASSETS.md](./PORTFOLIO_ASSETS.md).
 

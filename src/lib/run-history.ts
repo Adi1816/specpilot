@@ -6,6 +6,7 @@ import {
   scenarioPriorityValues,
   testCaseSourceValues,
   testCategoryValues,
+  testPackValues,
   testStatusValues,
 } from "@/lib/types";
 import type {
@@ -47,6 +48,13 @@ const coverageSummarySchema = z.object({
     deterministic: z.number(),
     hybrid: z.number(),
   }),
+  packs: z.object({
+    security: z.number(),
+    resilience: z.number(),
+  }).default({
+    security: 0,
+    resilience: 0,
+  }),
 });
 
 const runHistoryCaseSchema = z.object({
@@ -57,6 +65,7 @@ const runHistoryCaseSchema = z.object({
   path: z.string(),
   category: z.enum(testCategoryValues),
   source: z.enum(testCaseSourceValues),
+  pack: z.enum(testPackValues).optional(),
   priority: z.enum(scenarioPriorityValues).optional(),
   mutation: z.enum(hybridMutationValues).optional(),
   status: z.enum(testStatusValues),
@@ -105,6 +114,7 @@ function toHistoryCase(testCase: TestCase, result: TestResult | undefined): RunH
     path: testCase.path,
     category: testCase.category,
     source: testCase.source,
+    pack: testCase.pack,
     priority: testCase.priority,
     mutation: testCase.mutation,
     status: result?.status ?? "skipped",
@@ -133,6 +143,7 @@ function toCaseChange({
     method: reference.method,
     path: reference.path,
     source: reference.source,
+    pack: reference.pack,
     priority: reference.priority,
     mutation: reference.mutation,
     previousStatus: previous?.status,

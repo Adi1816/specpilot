@@ -13,21 +13,31 @@ import type {
   NormalizedSpec,
   RiskMemoSource,
   RiskInsight,
+  SpecLintCategory,
+  SpecLintFinding,
+  SpecLintSummary,
   RunConfig,
   RunSummary,
   ScenarioPriority,
   StrategyMode,
   TestCase,
   TestCategory,
+  TestPack,
   TestPlan,
   TestResult,
   TestStatus,
 } from "@/lib/types";
 
 type PathSegment = string | number;
-type CandidateLocation = Extract<HybridTargetLocation, "body" | "query" | "contentType">;
+type CandidateLocation = Extract<HybridTargetLocation, "body" | "query" | "contentType" | "auth">;
 
 interface SchemaPathMatch {
+  segments: PathSegment[];
+  schema: JsonSchemaObject;
+  label: string;
+}
+
+interface ObjectSchemaMatch {
   segments: PathSegment[];
   schema: JsonSchemaObject;
   label: string;
@@ -214,6 +224,57 @@ function walkSchemaFields(
   return null;
 }
 
+function isObjectSchema(schema: JsonSchemaObject | undefined) {
+  const type = normalizeSchemaType(schema);
+  return type === "object" || Boolean(schema?.properties);
+}
+
+function isNullableSchema(schema: JsonSchemaObject | undefined) {
+  if (!schema) {
+    return false;
+  }
+
+  if (schema.nullable) {
+    return true;
+  }
+
+  return Array.isArray(schema.type) ? schema.type.includes("null") : false;
+}
+
+function walkObjectSchemas(
+  schema: JsonSchemaObject | undefined,
+  predicate: (candidate: JsonSchemaObject, segments: PathSegment[]) => boolean,
+  trail: PathSegment[] = [],
+  depth = 0,
+): ObjectSchemaMatch | null {
+  if (!schema || depth > 4) {
+    return null;
+  }
+
+  if (isObjectSchema(schema) && predicate(schema, trail)) {
+    return {
+      segments: trail,
+      schema,
+      label: trail.length > 0 ? formatFieldPath(trail) : "body",
+    };
+  }
+
+  if (schema.properties) {
+    for (const [name, value] of Object.entries(schema.properties)) {
+      const nested = walkObjectSchemas(value, predicate, [...trail, name], depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  if (normalizeSchemaType(schema) === "array" && schema.items) {
+    return walkObjectSchemas(schema.items, predicate, [...trail, 0], depth + 1);
+  }
+
+  return null;
+}
+
 function isEnumSchema(schema: JsonSchemaObject | undefined) {
   return Boolean(schema?.enum && schema.enum.length > 0);
 }
@@ -273,6 +334,237 @@ function detectAuthHint(spec: NormalizedSpec, operation: ApiOperation): AuthHint
     placement: "header",
     name: scheme.in === "header" ? scheme.name : "Authorization",
     prefix: scheme.scheme === "bearer" ? "Bearer" : undefined,
+  };
+}
+
+function hasExampleValue(example: unknown, schema: JsonSchemaObject | undefined) {
+  return example !== undefined || schema?.example !== undefined;
+}
+
+function hasTypedSchema(schema: JsonSchemaObject | undefined) {
+  if (!schema) {
+    return false;
+  }
+
+  return Boolean(
+    schema.type !== undefined ||
+      schema.enum !== undefined ||
+      schema.oneOf !== undefined ||
+      schema.anyOf !== undefined ||
+      schema.allOf !== undefined ||
+      schema.$ref,
+  );
+}
+
+function hasModeledClientError(operation: ApiOperation) {
+  return operation.responses.some(
+    (response) => response.status === "400" || response.status === "401" || response.status === "403" || response.status === "404" || /^[45]xx$/i.test(response.status),
+  );
+}
+
+function hasModeledServerError(operation: ApiOperation) {
+  return operation.responses.some((response) => response.status === "500" || /^[5]xx$/i.test(response.status));
+}
+
+function hasSuccessResponseSchema(operation: ApiOperation) {
+  return operation.responses.some(
+    (response) =>
+      (/^2\d\d$/i.test(response.status) || /^[23]xx$/i.test(response.status)) &&
+      Boolean(response.schema || response.contentType),
+  );
+}
+
+function createSpecLintFinding(
+  id: string,
+  title: string,
+  severity: SpecLintFinding["severity"],
+  category: SpecLintCategory,
+  summary: string,
+  suggestion: string,
+  operationIds: string[],
+): SpecLintFinding {
+  return {
+    id,
+    title,
+    severity,
+    category,
+    summary,
+    suggestion,
+    operationIds,
+  };
+}
+
+function buildSpecLintReport(spec: NormalizedSpec, operations: ApiOperation[]) {
+  const findings: SpecLintFinding[] = [];
+  const writeOperations = operations.filter((operation) =>
+    operation.method === "post" ||
+    operation.method === "put" ||
+    operation.method === "patch" ||
+    operation.method === "delete",
+  );
+
+  const missingExamples = writeOperations.filter(
+    (operation) =>
+      operation.requestBody &&
+      !hasExampleValue(operation.requestBody.example, operation.requestBody.schema),
+  );
+  if (missingExamples.length > 0) {
+    findings.push(
+      createSpecLintFinding(
+        "missing-request-examples",
+        "Request examples are missing on write routes",
+        "medium",
+        "examples",
+        "Several mutation endpoints rely on schema-only request bodies, which makes generated inputs less trustworthy for reviewers and downstream tooling.",
+        "Add explicit request examples for the highest-signal write routes so planning, demos, and debugging stay grounded in realistic payloads.",
+        takeOperationIds(missingExamples, 4),
+      ),
+    );
+  }
+
+  const thinClientErrors = operations.filter((operation) => !hasModeledClientError(operation));
+  if (thinClientErrors.length > 0) {
+    findings.push(
+      createSpecLintFinding(
+        "thin-client-errors",
+        "Client-side error coverage is thin",
+        "high",
+        "error_coverage",
+        "Some endpoints only model success responses, so validation and auth regressions can slip through without a contract-aligned failure target.",
+        "Document at least one representative 4xx path for each important route, especially validation failures, auth rejections, and missing-resource cases.",
+        takeOperationIds(thinClientErrors, 4),
+      ),
+    );
+  }
+
+  const thinServerErrors = writeOperations.filter((operation) => !hasModeledServerError(operation));
+  if (thinServerErrors.length > 0) {
+    findings.push(
+      createSpecLintFinding(
+        "thin-server-errors",
+        "Write routes lack modeled 5xx responses",
+        "low",
+        "error_coverage",
+        "Mutation routes are usually where backend incidents surface first, but their failure envelope is only partially described in the contract.",
+        "Add representative 5xx or default error responses on critical write flows so incident reports can stay contract-aware.",
+        takeOperationIds(thinServerErrors, 4),
+      ),
+    );
+  }
+
+  const undocumentedSecurity = operations.filter(
+    (operation) =>
+      operation.requiresAuth &&
+      operation.securitySchemes.some(
+        (schemeName) => !spec.metadata.securitySchemes.some((entry) => entry.name === schemeName),
+      ),
+  );
+  if (undocumentedSecurity.length > 0) {
+    findings.push(
+      createSpecLintFinding(
+        "security-schemes",
+        "Protected routes reference weakly documented auth schemes",
+        "medium",
+        "security",
+        "Some secured routes cannot be mapped cleanly back to a declared security scheme, which weakens auth-aware automation and makes failures harder to explain.",
+        "Keep protected operations aligned with explicit security scheme definitions so auth hints and generated tests stay deterministic.",
+        takeOperationIds(undocumentedSecurity, 4),
+      ),
+    );
+  }
+
+  const underTypedParameters = operations.filter((operation) =>
+    operation.parameters.some((parameter) => !hasTypedSchema(parameter.schema)),
+  );
+  if (underTypedParameters.length > 0) {
+    findings.push(
+      createSpecLintFinding(
+        "parameter-typing",
+        "Some parameters are under-typed",
+        "medium",
+        "schema",
+        "The contract includes parameters without a strong schema shape, which makes boundary analysis and input mutation less precise than they should be.",
+        "Add explicit parameter types, enums, and bounds on the most important query and path inputs.",
+        takeOperationIds(underTypedParameters, 4),
+      ),
+    );
+  }
+
+  const thinSuccessSchemas = operations.filter((operation) => !hasSuccessResponseSchema(operation));
+  if (thinSuccessSchemas.length > 0) {
+    findings.push(
+      createSpecLintFinding(
+        "success-response-schemas",
+        "Success responses are missing typed payload shapes",
+        "medium",
+        "schema",
+        "A few success paths do not describe a concrete response schema, which weakens output validation and makes generated reports less contract-rich.",
+        "Document the primary success response body for the most important endpoints so result validation can stay schema-aware.",
+        takeOperationIds(thinSuccessSchemas, 4),
+      ),
+    );
+  }
+
+  const weakDocumentation = operations.filter(
+    (operation) => !operation.description?.trim() || operation.tags.length === 0,
+  );
+  if (weakDocumentation.length > 0 || spec.metadata.servers.length === 0) {
+    findings.push(
+      createSpecLintFinding(
+        "documentation-hygiene",
+        "Documentation hygiene can be tightened",
+        "low",
+        "documentation",
+        spec.metadata.servers.length === 0
+          ? "The spec does not declare a server target, and a few operations also ship with thin narrative metadata."
+          : "Some operations still rely on thin descriptions or empty tag groupings, which makes API surfaces harder to scan and present.",
+        spec.metadata.servers.length === 0
+          ? "Declare at least one canonical server and tighten the descriptions/tags on the busiest routes."
+          : "Fill in operation descriptions and tag groupings so reviewers can navigate the API surface more deliberately.",
+        spec.metadata.servers.length === 0
+          ? takeOperationIds(operations, 4)
+          : takeOperationIds(weakDocumentation, 4),
+      ),
+    );
+  }
+
+  const penalty = findings.reduce((total, finding) => {
+    if (finding.severity === "critical") {
+      return total + 18;
+    }
+
+    if (finding.severity === "high") {
+      return total + 13;
+    }
+
+    if (finding.severity === "medium") {
+      return total + 8;
+    }
+
+    return total + 4;
+  }, 0);
+
+  const summary: SpecLintSummary = {
+    score: Math.max(48, 100 - penalty),
+    totalFindings: findings.length,
+    bySeverity: {
+      critical: findings.filter((finding) => finding.severity === "critical").length,
+      high: findings.filter((finding) => finding.severity === "high").length,
+      medium: findings.filter((finding) => finding.severity === "medium").length,
+      low: findings.filter((finding) => finding.severity === "low").length,
+    },
+    byCategory: {
+      examples: findings.filter((finding) => finding.category === "examples").length,
+      schema: findings.filter((finding) => finding.category === "schema").length,
+      error_coverage: findings.filter((finding) => finding.category === "error_coverage").length,
+      security: findings.filter((finding) => finding.category === "security").length,
+      documentation: findings.filter((finding) => finding.category === "documentation").length,
+    },
+  };
+
+  return {
+    summary,
+    findings,
   };
 }
 
@@ -386,6 +678,14 @@ function createAuthCase(operation: ApiOperation, happyPath: TestCase): TestCase 
   };
 }
 
+function buildAuthExpectedPatterns(operation: ApiOperation) {
+  return pickPatterns(
+    operation,
+    (status) => status === "401" || status === "403" || /^[45]xx$/i.test(status),
+    ["401"],
+  );
+}
+
 function createNotFoundCase(operation: ApiOperation, happyPath: TestCase): TestCase | null {
   const hasPathParams = Object.keys(happyPath.request.pathParams).length > 0;
   const hasNotFoundResponse = operation.responses.some((response) => response.status === "404");
@@ -409,6 +709,82 @@ function createNotFoundCase(operation: ApiOperation, happyPath: TestCase): TestC
   };
 }
 
+function createAuthTamperPackCase(operation: ApiOperation, happyPath: TestCase): TestCase | null {
+  if (!operation.requiresAuth || !happyPath.authHint) {
+    return null;
+  }
+
+  const request = cloneValue(happyPath.request);
+  request.authOverride = {
+    placement: happyPath.authHint.placement,
+    name: happyPath.authHint.name,
+    prefix: happyPath.authHint.prefix,
+    value: "specpilot-invalid-token",
+  };
+
+  return {
+    ...happyPath,
+    id: makeTestId(operation, "pack-auth-tamper"),
+    name: `${operation.summary} credential tamper probe`,
+    category: "auth",
+    rationale: "Sends a malformed or stale credential to confirm the route rejects bad secrets instead of only checking for credential presence.",
+    expectedStatusPatterns: buildAuthExpectedPatterns(operation),
+    request,
+    pack: "security",
+  };
+}
+
+function createEmptyBodyPackCase(operation: ApiOperation, happyPath: TestCase): TestCase | null {
+  if (!operation.requestBody?.required || operation.method === "get" || operation.method === "head") {
+    return null;
+  }
+
+  const request = cloneValue(happyPath.request);
+  request.body = undefined;
+
+  return {
+    ...happyPath,
+    id: makeTestId(operation, "pack-empty-body"),
+    name: `${operation.summary} empty body rejection`,
+    category: "validation",
+    rationale: "Drops the entire required request body to confirm the transport layer rejects incomplete write attempts before business logic executes.",
+    expectedStatusPatterns: buildUnsupportedMediaExpectedPatterns(operation),
+    request,
+    pack: "resilience",
+  };
+}
+
+function createUnexpectedPropertyPackCase(operation: ApiOperation, happyPath: TestCase): TestCase | null {
+  if (!operation.requestBody || !happyPath.request.body || !isRecord(happyPath.request.body)) {
+    return null;
+  }
+
+  const strictTarget = walkObjectSchemas(
+    operation.requestBody.schema,
+    (schema) => isObjectSchema(schema) && schema.additionalProperties === false,
+  );
+
+  if (!strictTarget) {
+    return null;
+  }
+
+  const request = cloneValue(happyPath.request);
+  if (!addUnexpectedProperty(request.body, strictTarget.segments, "specpilotUnexpected", "probe")) {
+    return null;
+  }
+
+  return {
+    ...happyPath,
+    id: makeTestId(operation, "pack-unexpected-property"),
+    name: `${operation.summary} strict envelope guard`,
+    category: "validation",
+    rationale: "Injects an out-of-contract property into a strict object shape to confirm the endpoint rejects payload envelope drift.",
+    expectedStatusPatterns: buildValidationExpectedPatterns(operation),
+    request,
+    pack: "resilience",
+  };
+}
+
 function buildCoverageSummary(operations: ApiOperation[], testCases: TestCase[]): CoverageSummary {
   return {
     operationsCovered: operations.length,
@@ -422,6 +798,10 @@ function buildCoverageSummary(operations: ApiOperation[], testCases: TestCase[])
     sources: {
       deterministic: testCases.filter((testCase) => testCase.source === "deterministic").length,
       hybrid: testCases.filter((testCase) => testCase.source === "hybrid").length,
+    },
+    packs: {
+      security: testCases.filter((testCase) => testCase.pack === "security").length,
+      resilience: testCases.filter((testCase) => testCase.pack === "resilience").length,
     },
   };
 }
@@ -461,8 +841,14 @@ function scoreCandidate(
   const mutationWeight =
     mutation === "invalid_enum"
       ? 96
+      : mutation === "auth_tamper"
+        ? 93
       : mutation === "boundary_violation"
         ? 90
+        : mutation === "nullability_violation"
+          ? 88
+          : mutation === "unexpected_property"
+            ? 86
         : mutation === "invalid_type"
           ? 84
           : 78;
@@ -479,7 +865,8 @@ function scoreCandidate(
   const bodyWeight = operation.requestBody?.required ? 4 : 0;
   const authWeight = operation.requiresAuth ? 4 : 0;
   const pathWeight = operation.path.includes("{") ? 3 : 0;
-  const locationWeight = location === "body" ? 3 : location === "query" ? 2 : 1;
+  const locationWeight =
+    location === "body" ? 3 : location === "query" ? 2 : location === "auth" ? 3 : 1;
 
   return mutationWeight + methodWeight + bodyWeight + authWeight + pathWeight + locationWeight;
 }
@@ -596,15 +983,91 @@ function buildUnsupportedMediaCandidate(operation: ApiOperation): ScenarioCandid
   };
 }
 
+function buildNullabilityCandidate(operation: ApiOperation): ScenarioCandidate | null {
+  const match = walkSchemaFields(
+    operation.requestBody?.schema,
+    (schema) => isScalarSchema(schema) && !isNullableSchema(schema),
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const fieldPath = formatFieldPath(match.segments);
+  const label = fieldPath || match.label;
+
+  return {
+    id: makeTestId(operation, `hybrid-null-body-${label}`),
+    operationId: operation.id,
+    title: `${operation.summary} nullability contract probe`,
+    rationale: `Forces \`${label}\` to \`null\` to confirm non-nullable payload fields are rejected instead of silently coerced or ignored.`,
+    category: "validation",
+    mutation: "nullability_violation",
+    location: "body",
+    fieldPath,
+    segments: match.segments,
+    schema: match.schema,
+    expectedStatusPatterns: buildValidationExpectedPatterns(operation),
+    score: scoreCandidate(operation, "nullability_violation", "body"),
+  };
+}
+
+function buildUnexpectedPropertyCandidate(operation: ApiOperation): ScenarioCandidate | null {
+  const strictTarget = walkObjectSchemas(
+    operation.requestBody?.schema,
+    (schema) => isObjectSchema(schema) && schema.additionalProperties === false,
+  );
+
+  if (!strictTarget) {
+    return null;
+  }
+
+  return {
+    id: makeTestId(operation, `hybrid-extra-field-${strictTarget.label}`),
+    operationId: operation.id,
+    title: `${operation.summary} strict payload envelope`,
+    rationale: `Injects an unexpected property into \`${strictTarget.label}\` to verify the endpoint enforces strict request envelopes when the contract disallows additional properties.`,
+    category: "validation",
+    mutation: "unexpected_property",
+    location: "body",
+    fieldPath: strictTarget.segments.length > 0 ? formatFieldPath(strictTarget.segments) : undefined,
+    segments: strictTarget.segments,
+    schema: strictTarget.schema,
+    expectedStatusPatterns: buildValidationExpectedPatterns(operation),
+    score: scoreCandidate(operation, "unexpected_property", "body"),
+  };
+}
+
+function buildAuthTamperCandidate(operation: ApiOperation): ScenarioCandidate | null {
+  if (!operation.requiresAuth) {
+    return null;
+  }
+
+  return {
+    id: makeTestId(operation, "hybrid-auth-tamper"),
+    operationId: operation.id,
+    title: `${operation.summary} stale credential rejection`,
+    rationale: "Substitutes a deliberately bad credential to confirm the route rejects malformed or stale secrets, not only missing credentials.",
+    category: "auth",
+    mutation: "auth_tamper",
+    location: "auth",
+    expectedStatusPatterns: buildAuthExpectedPatterns(operation),
+    score: scoreCandidate(operation, "auth_tamper", "auth"),
+  };
+}
+
 function buildHybridCandidates(operation: ApiOperation) {
   const candidates = [
     buildBodyCandidate(operation, "invalid_enum"),
     buildBodyCandidate(operation, "boundary_violation"),
     buildBodyCandidate(operation, "invalid_type"),
+    buildNullabilityCandidate(operation),
+    buildUnexpectedPropertyCandidate(operation),
     buildQueryCandidate(operation, "invalid_enum"),
     buildQueryCandidate(operation, "boundary_violation"),
     buildQueryCandidate(operation, "invalid_type"),
     buildUnsupportedMediaCandidate(operation),
+    buildAuthTamperCandidate(operation),
   ].filter((candidate): candidate is ScenarioCandidate => Boolean(candidate));
 
   const seen = new Set<string>();
@@ -665,7 +1128,8 @@ function buildFallbackRiskInsights(operations: ApiOperation[], candidates: Scena
       (candidate) =>
         candidate.mutation === "invalid_enum" ||
         candidate.mutation === "boundary_violation" ||
-        candidate.mutation === "invalid_type",
+        candidate.mutation === "invalid_type" ||
+        candidate.mutation === "nullability_violation",
     )
   ) {
     insights.push(
@@ -687,6 +1151,7 @@ function buildFallbackRiskInsights(operations: ApiOperation[], candidates: Scena
           "Probe out-of-contract enum values",
           "Push numeric and string bounds",
           "Send wrong scalar types on critical inputs",
+          "Treat unexpected nulls as contract violations",
         ],
       ),
     );
@@ -703,6 +1168,31 @@ function buildFallbackRiskInsights(operations: ApiOperation[], candidates: Scena
         [
           "Keep unauthorized requests failing fast",
           "Verify auth headers are not over-trusted",
+          "Reject stale or tampered credentials explicitly",
+        ],
+      ),
+    );
+  }
+
+  if (candidates.some((candidate) => candidate.mutation === "unexpected_property")) {
+    insights.push(
+      createRiskInsight(
+        "strict-envelope",
+        "Strict request envelope enforcement",
+        "medium",
+        "When contracts disallow additional properties, silently accepting unexpected fields creates drift between documentation and runtime behavior.",
+        takeOperationIdsFromCandidates(
+          candidates,
+          (candidate) => candidate.mutation === "unexpected_property",
+        ).length > 0
+          ? takeOperationIdsFromCandidates(
+              candidates,
+              (candidate) => candidate.mutation === "unexpected_property",
+            )
+          : takeOperationIds(writeOperations.length > 0 ? writeOperations : operations),
+        [
+          "Reject unexpected payload properties on strict objects",
+          "Keep request envelope validation close to the edge",
         ],
       ),
     );
@@ -881,7 +1371,7 @@ function buildHybridPrompt(
   const candidateSnapshot = rankedCandidates
     .map((candidate) => {
       const field = candidate.fieldPath ? `; field=${candidate.fieldPath}` : "";
-      return `- ${candidate.id}: operation=${candidate.operationId}; mutation=${candidate.mutation}; location=${candidate.location}${field}; default_title=${candidate.title}`;
+      return `- ${candidate.id}: operation=${candidate.operationId}; mutation=${candidate.mutation}; location=${candidate.location}${field}; prior_score=${candidate.score}; default_title=${candidate.title}`;
     })
     .join("\n");
 
@@ -897,6 +1387,7 @@ function buildHybridPrompt(
     "- Keep the planSummary to one sentence.",
     "- Focus on materially different risks, not minor variations of the same test.",
     "- Keep the language concise, grounded, and specific to the contract.",
+    "- Treat prior_score as a deterministic risk prior, but still preserve scenario diversity across the API surface.",
     "",
     `API: ${spec.metadata.title} v${spec.metadata.version}`,
     "",
@@ -971,11 +1462,13 @@ function formatRiskProviderName(source: TestPlan["riskMemoSource"]) {
 function composePlanSummary(
   baseSummary: string,
   coreCount: number,
+  packCount: number,
   operationsCovered: number,
   candidateCount: number,
   addedCount: number,
   riskSource: TestPlan["riskMemoSource"],
   strategy: StrategyMode,
+  specLintSummary: SpecLintSummary,
 ) {
   const parts = [baseSummary.trim().replace(/\.+$/, "")];
 
@@ -983,9 +1476,19 @@ function composePlanSummary(
     `The deterministic core covers ${coreCount} runnable case${coreCount === 1 ? "" : "s"} across ${operationsCovered} operation${operationsCovered === 1 ? "" : "s"}.`,
   );
 
+  parts.push(
+    `The deterministic contract review scored this selection at ${specLintSummary.score}/100 with ${specLintSummary.totalFindings} lint finding${specLintSummary.totalFindings === 1 ? "" : "s"}.`,
+  );
+
   if (strategy === "baseline") {
     parts.push("Baseline mode keeps prioritisation fully deterministic and leaves AI guidance turned off.");
     return parts.join(" ");
+  }
+
+  if (packCount > 0) {
+    parts.push(
+      `Enhanced mode also added ${packCount} deterministic security and resilience probe${packCount === 1 ? "" : "s"} before hybrid expansion.`,
+    );
   }
 
   if (candidateCount === 0) {
@@ -1096,6 +1599,29 @@ function coerceQueryValue(value: unknown): string | number | boolean {
   return JSON.stringify(value);
 }
 
+function getValueAtPath(target: unknown, segments: PathSegment[]) {
+  let cursor = target;
+
+  for (const segment of segments) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(cursor) || segment >= cursor.length) {
+        return null;
+      }
+
+      cursor = cursor[segment];
+      continue;
+    }
+
+    if (!isRecord(cursor) || !(segment in cursor)) {
+      return null;
+    }
+
+    cursor = cursor[segment];
+  }
+
+  return cursor;
+}
+
 function getPathContainer(target: unknown, segments: PathSegment[]) {
   if (!target || segments.length === 0) {
     return null;
@@ -1148,6 +1674,30 @@ function setValueAtPath(target: unknown, segments: PathSegment[], value: unknown
   }
 
   cursor.container[cursor.key] = value;
+  return true;
+}
+
+function addUnexpectedProperty(
+  target: unknown,
+  segments: PathSegment[],
+  key: string,
+  value: unknown,
+) {
+  const container = segments.length === 0 ? target : getValueAtPath(target, segments);
+
+  if (!isRecord(container)) {
+    return false;
+  }
+
+  let nextKey = key;
+  let counter = 1;
+
+  while (nextKey in container) {
+    nextKey = `${key}${counter}`;
+    counter += 1;
+  }
+
+  container[nextKey] = value;
   return true;
 }
 
@@ -1220,12 +1770,50 @@ function materializeHybridTestCase(
       break;
     }
 
+    case "nullability_violation": {
+      if (candidate.location !== "body" || !candidate.segments || request.body === undefined) {
+        return null;
+      }
+
+      if (!setValueAtPath(request.body, candidate.segments, null)) {
+        return null;
+      }
+
+      break;
+    }
+
+    case "unexpected_property": {
+      if (candidate.location !== "body" || request.body === undefined) {
+        return null;
+      }
+
+      if (!addUnexpectedProperty(request.body, candidate.segments ?? [], "specpilotUnexpected", "probe")) {
+        return null;
+      }
+
+      break;
+    }
+
     case "unsupported_media_type": {
       request.contentType = "text/plain";
       request.body =
         typeof request.body === "string"
           ? request.body
           : JSON.stringify(request.body ?? { probe: "plain-text" });
+      break;
+    }
+
+    case "auth_tamper": {
+      if (!happyPath.authHint) {
+        return null;
+      }
+
+      request.authOverride = {
+        placement: happyPath.authHint.placement,
+        name: happyPath.authHint.name,
+        prefix: happyPath.authHint.prefix,
+        value: "specpilot-invalid-token",
+      };
       break;
     }
   }
@@ -1256,8 +1844,10 @@ export async function generateTestPlan(
     ? selectedOperationIds
     : spec.operations.map((operation) => operation.id);
   const operations = spec.operations.filter((operation) => operationIds.includes(operation.id));
+  const specLint = buildSpecLintReport(spec, operations);
 
   const deterministicCases: TestCase[] = [];
+  const deterministicPackCases: TestCase[] = [];
   const happyPathLookup = new Map<string, TestCase>();
   const hybridCandidates: ScenarioCandidate[] = [];
 
@@ -1282,6 +1872,21 @@ export async function generateTestPlan(
     }
 
     if (strategy === "enhanced") {
+      const authTamperPack = createAuthTamperPackCase(operation, happyPath);
+      if (authTamperPack) {
+        deterministicPackCases.push(authTamperPack);
+      }
+
+      const emptyBodyPack = createEmptyBodyPackCase(operation, happyPath);
+      if (emptyBodyPack) {
+        deterministicPackCases.push(emptyBodyPack);
+      }
+
+      const strictEnvelopePack = createUnexpectedPropertyPackCase(operation, happyPath);
+      if (strictEnvelopePack) {
+        deterministicPackCases.push(strictEnvelopePack);
+      }
+
       hybridCandidates.push(...buildHybridCandidates(operation));
     }
   }
@@ -1292,17 +1897,21 @@ export async function generateTestPlan(
     const planSummary = composePlanSummary(
       "Baseline planning locked the suite to contract-derived core coverage.",
       deterministicCases.length,
+      0,
       operations.length,
       0,
       0,
       "disabled",
       strategy,
+      specLint.summary,
     );
 
     return {
       selectedOperationIds: operationIds,
       testCases: deterministicCases,
       coverage: buildCoverageSummary(operations, deterministicCases),
+      specLintSummary: specLint.summary,
+      specLintFindings: specLint.findings,
       planSummary,
       riskMemo: buildRiskMemo(planSummary, fallbackInsights),
       riskMemoSource: "disabled",
@@ -1311,9 +1920,10 @@ export async function generateTestPlan(
     };
   }
 
+  const deterministicExecutionCases = [...deterministicCases, ...deterministicPackCases];
   const hybridPlan = await planHybridCoverage(spec, operations, hybridCandidates);
   const hybridScenarios: HybridScenario[] = [];
-  const allTestCases = [...deterministicCases];
+  const allTestCases = [...deterministicExecutionCases];
   const seenTestIds = new Set(allTestCases.map((testCase) => testCase.id));
   const candidateLookup = new Map(hybridCandidates.map((candidate) => [candidate.id, candidate]));
 
@@ -1356,17 +1966,21 @@ export async function generateTestPlan(
   const planSummary = composePlanSummary(
     hybridPlan.planSummary,
     deterministicCases.length,
+    deterministicPackCases.length,
     operations.length,
     hybridCandidates.length,
     hybridScenarios.length,
     hybridPlan.riskSource,
     strategy,
+    specLint.summary,
   );
 
   return {
     selectedOperationIds: operationIds,
     testCases: allTestCases,
     coverage: buildCoverageSummary(operations, allTestCases),
+    specLintSummary: specLint.summary,
+    specLintFindings: specLint.findings,
     planSummary,
     riskMemo: buildRiskMemo(planSummary, hybridPlan.riskInsights),
     riskMemoSource: hybridPlan.riskSource,
@@ -1397,9 +2011,16 @@ function buildRequestUrl(testCase: TestCase, runConfig: RunConfig) {
     testCase.requiresAuth &&
     !testCase.request.omitAuth &&
     testCase.authHint?.placement === "query" &&
-    runConfig.authToken
+    (testCase.request.authOverride?.placement === "query" ? testCase.request.authOverride.value : runConfig.authToken)
   ) {
-    url.searchParams.set(testCase.authHint.name, runConfig.authToken);
+    const queryAuthValue =
+      testCase.request.authOverride?.placement === "query"
+        ? testCase.request.authOverride.value
+        : runConfig.authToken;
+
+    if (queryAuthValue) {
+      url.searchParams.set(testCase.request.authOverride?.name ?? testCase.authHint.name, queryAuthValue);
+    }
   }
 
   return url;
@@ -1452,12 +2073,21 @@ function buildHeaders(testCase: TestCase, runConfig: RunConfig) {
     headers.set("Content-Type", testCase.request.contentType);
   }
 
-  if (testCase.requiresAuth && !testCase.request.omitAuth && runConfig.authToken) {
+  if (
+    testCase.requiresAuth &&
+    !testCase.request.omitAuth &&
+    (testCase.request.authOverride?.placement === "header" || runConfig.authToken)
+  ) {
     const hint = testCase.authHint;
     if (hint?.placement === "header") {
-      const headerName = runConfig.authHeaderName?.trim() || hint.name;
-      const prefix = runConfig.authPrefix?.trim() || hint.prefix;
-      headers.set(headerName, prefix ? `${prefix} ${runConfig.authToken}` : runConfig.authToken);
+      const authOverride = testCase.request.authOverride?.placement === "header" ? testCase.request.authOverride : null;
+      const headerName = authOverride?.name?.trim() || runConfig.authHeaderName?.trim() || hint.name;
+      const prefix = authOverride?.prefix?.trim() || runConfig.authPrefix?.trim() || hint.prefix;
+      const value = authOverride?.value ?? runConfig.authToken;
+
+      if (typeof value === "string") {
+        headers.set(headerName, prefix ? `${prefix} ${value}` : value);
+      }
     }
   }
 
@@ -1465,7 +2095,10 @@ function buildHeaders(testCase: TestCase, runConfig: RunConfig) {
 }
 
 async function runSingleTestCase(testCase: TestCase, runConfig: RunConfig): Promise<TestResult> {
-  const needsToken = testCase.requiresAuth && !testCase.request.omitAuth;
+  const needsToken =
+    testCase.requiresAuth &&
+    !testCase.request.omitAuth &&
+    !testCase.request.authOverride;
   if (needsToken && !runConfig.authToken) {
     return {
       testCaseId: testCase.id,
@@ -1585,6 +2218,14 @@ function formatInsightSource(source: TestPlan["riskMemoSource"]) {
   return "baseline deterministic";
 }
 
+function formatPackLabel(pack: TestPack | undefined) {
+  return pack ? `${pack} pack` : "core coverage";
+}
+
+function formatSpecLintCategory(category: SpecLintFinding["category"]) {
+  return category.replace(/_/g, " ");
+}
+
 function buildFailureTicket(testCase: TestCase | undefined, result: TestResult) {
   if (!testCase) {
     return null;
@@ -1594,6 +2235,7 @@ function buildFailureTicket(testCase: TestCase | undefined, result: TestResult) 
     `### ${testCase.name}`,
     `- Endpoint: \`${testCase.method.toUpperCase()} ${testCase.path}\``,
     `- Source: ${testCase.source === "hybrid" ? `hybrid ${testCase.mutation ?? "edge case"}` : "deterministic core"}`,
+    `- Pack: ${formatPackLabel(testCase.pack)}`,
     `- Expected: ${testCase.expectedStatusPatterns.join(", ")}`,
     `- Actual: ${result.actualStatus ?? "no response"}`,
     `- Repro: ${result.requestUrl}`,
@@ -1618,6 +2260,7 @@ export function buildMarkdownReport(
       `### [${result.status.toUpperCase()}] ${testCase?.name ?? result.testCaseId}`,
       `- Request: \`${result.method.toUpperCase()} ${result.requestUrl}\``,
       `- Case source: ${testCase?.source === "hybrid" ? `hybrid ${testCase.mutation ?? "edge case"}` : "deterministic core"}`,
+      `- Pack: ${formatPackLabel(testCase?.pack)}`,
       `- Expected: ${result.expectedStatusPatterns.join(", ")}`,
       `- Actual: ${result.actualStatus ?? "no status"}`,
       `- Latency: ${result.latencyMs ?? 0} ms`,
@@ -1661,6 +2304,31 @@ export function buildMarkdownReport(
       .join("\n")
     : "- No hybrid edge cases were added to this run.";
 
+  const lintBlocks = plan.specLintFindings.length > 0
+    ? plan.specLintFindings
+      .map(
+        (finding) =>
+          [
+            `### ${finding.title} [${finding.severity}]`,
+            `- Category: ${formatSpecLintCategory(finding.category)}`,
+            `- Operations: ${finding.operationIds.join(", ")}`,
+            `- Why it matters: ${finding.summary}`,
+            `- Suggested fix: ${finding.suggestion}`,
+          ].join("\n"),
+      )
+      .join("\n\n")
+    : "- No deterministic contract quality findings were detected in this selection.";
+
+  const packBlocks = plan.testCases.filter((testCase) => testCase.pack).length > 0
+    ? plan.testCases
+      .filter((testCase) => testCase.pack)
+      .map(
+        (testCase) =>
+          `- ${testCase.name} (${formatPackLabel(testCase.pack)}, ${testCase.category}) -> \`${testCase.method.toUpperCase()} ${testCase.path}\``,
+      )
+      .join("\n")
+    : "- No deterministic security or resilience packs were added to this run.";
+
   return [
     `# SpecPilot execution report`,
     "",
@@ -1670,12 +2338,21 @@ export function buildMarkdownReport(
     `## Coverage snapshot`,
     `- Operations covered: ${plan.coverage.operationsCovered}`,
     `- Total test cases: ${plan.coverage.totalCases}`,
-    `- Deterministic core cases: ${plan.coverage.sources.deterministic}`,
+    `- Deterministic cases: ${plan.coverage.sources.deterministic}`,
     `- Hybrid edge cases: ${plan.coverage.sources.hybrid}`,
+    `- Security pack cases: ${plan.coverage.packs.security}`,
+    `- Resilience pack cases: ${plan.coverage.packs.resilience}`,
     `- Happy paths: ${plan.coverage.categories.happy}`,
     `- Validation checks: ${plan.coverage.categories.validation}`,
     `- Auth checks: ${plan.coverage.categories.auth}`,
     `- Discovery checks: ${plan.coverage.categories.discovery}`,
+    "",
+    `## Contract quality review`,
+    `- Score: ${plan.specLintSummary.score}/100`,
+    `- Findings: ${plan.specLintSummary.totalFindings}`,
+    `- High severity: ${plan.specLintSummary.bySeverity.high}`,
+    `- Medium severity: ${plan.specLintSummary.bySeverity.medium}`,
+    `- Low severity: ${plan.specLintSummary.bySeverity.low}`,
     "",
     `## Planning summary`,
     `- ${plan.planSummary ?? "Planning summary unavailable."}`,
@@ -1693,6 +2370,12 @@ export function buildMarkdownReport(
     "",
     `## Structured risk insights`,
     riskBlocks,
+    "",
+    `## Deterministic pack coverage`,
+    packBlocks,
+    "",
+    `## Spec lint findings`,
+    lintBlocks,
     "",
     `## Hybrid edge cases`,
     hybridBlocks,

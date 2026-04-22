@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import type { CSSProperties, ChangeEvent, PointerEvent, ReactNode } from "react";
 import { useDeferredValue, useEffect, useState, useTransition } from "react";
 import {
@@ -37,12 +38,15 @@ import type {
   RunHistoryDiff,
   RunHistoryEntry,
   RunSummary,
+  SpecLintFinding,
   StrategyMode,
   TestCase,
   TestCaseSource,
+  TestPack,
   TestPlan,
   TestResult,
 } from "@/lib/types";
+import type { SocialSceneLink } from "@/components/spec-pilot-3d-scenes";
 
 type AnalyzeResponse = {
   spec: NormalizedSpec;
@@ -80,6 +84,46 @@ type ToastState = {
 const demoSpecTitle = "SpecPilot Demo Orders API";
 const demoBasePath = "/api/demo/v1";
 const demoToken = "demo-token";
+const creatorProfiles: SocialSceneLink[] = [
+  {
+    id: "linkedin",
+    label: "LinkedIn",
+    href: "https://www.linkedin.com/in/aditya-srivastava-12476524a/",
+    texturePath: "/creator-icons/linkedin-3d.png",
+  },
+  {
+    id: "instagram",
+    label: "Instagram",
+    href: "https://www.instagram.com/adiedits_1816?igsh=cTZsdGI3Zm9nNDVl",
+    texturePath: "/creator-icons/instagram-3d.png",
+  },
+  {
+    id: "github",
+    label: "GitHub",
+    href: "https://github.com/Adi1816",
+    texturePath: "/creator-icons/github-3d.png",
+  },
+];
+
+const SocialOrbitScene = dynamic(
+  () => import("@/components/spec-pilot-3d-scenes").then((module) => module.SocialOrbitScene),
+  {
+    ssr: false,
+    loading: () => (
+      <SceneFallback variant="social" />
+    ),
+  },
+);
+
+const SuiteSignalScene = dynamic(
+  () => import("@/components/spec-pilot-3d-scenes").then((module) => module.SuiteSignalScene),
+  {
+    ssr: false,
+    loading: () => (
+      <SceneFallback variant="crystal" />
+    ),
+  },
+);
 
 async function requestJson<T>(path: string, payload: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -160,6 +204,14 @@ function formatRiskSourceContext(source: RiskMemoSource) {
   }
 
   return "Core only";
+}
+
+function formatPackLabel(pack: TestPack) {
+  return pack === "security" ? "Security pack" : "Resilience pack";
+}
+
+function formatSpecLintCategory(category: SpecLintFinding["category"]) {
+  return category.replace(/_/g, " ");
 }
 
 function formatRunTimestamp(value: string) {
@@ -428,18 +480,23 @@ export function SpecPilotWorkbench() {
       setSelectedBaselineId(null);
 
       const hybridCount = data.plan.coverage.sources.hybrid;
+      const packCount = data.plan.coverage.packs.security + data.plan.coverage.packs.resilience;
       const hybridLabel =
         hybridCount > 0
           ? ` Added ${hybridCount} promoted hybrid edge case${hybridCount === 1 ? "" : "s"}.`
           : " No extra hybrid cases were promoted for this selection.";
+      const packLabel =
+        packCount > 0
+          ? ` Deterministic packs added ${packCount} security/resilience probe${packCount === 1 ? "" : "s"}.`
+          : " No deterministic pack probes were added for this selection.";
 
       setBanner(
-        `Generated ${data.plan.testCases.length} test cases across ${data.plan.coverage.operationsCovered} operations. Risk prioritization source: ${formatRiskSourceLabel(data.plan.riskMemoSource)}.${hybridLabel}`,
+        `Generated ${data.plan.testCases.length} test cases across ${data.plan.coverage.operationsCovered} operations. Contract score: ${data.plan.specLintSummary.score}/100. Risk prioritization source: ${formatRiskSourceLabel(data.plan.riskMemoSource)}.${packLabel}${hybridLabel}`,
       );
 
       showToast({
         title: "Test plan generated.",
-        detail: "Step 4 now includes the structured planning summary, risk cards, and the promoted edge cases.",
+        detail: "Step 4 now includes contract quality findings, deterministic pack coverage, structured risk cards, and the promoted edge cases.",
         actionLabel: "Open suite",
         actionTarget: "step-4",
       });
@@ -560,6 +617,11 @@ export function SpecPilotWorkbench() {
   const selectedVisibleCount = filteredOperations.filter((operation) =>
     selectedOperationIds.includes(operation.id),
   ).length;
+  const packTestCases =
+    plan?.testCases.filter(
+      (testCase): testCase is TestCase & { pack: TestPack } => Boolean(testCase.pack),
+    ) ?? [];
+  const packCaseCount = plan ? plan.coverage.packs.security + plan.coverage.packs.resilience : 0;
   const testCaseLookup = new Map(plan?.testCases.map((testCase) => [testCase.id, testCase]) ?? []);
   const currentRunEntry =
     currentRunId ? runHistory.find((entry) => entry.id === currentRunId) ?? null : null;
@@ -610,7 +672,7 @@ export function SpecPilotWorkbench() {
       id: "step-4",
       label: "Generated suite",
       meta: plan
-        ? `${plan.testCases.length} cases ready, ${plan.coverage.sources.hybrid} hybrid`
+        ? `${plan.testCases.length} cases, ${packCaseCount} pack, ${plan.coverage.sources.hybrid} hybrid`
         : "Appears after generation",
       state: plan ? "done" : "locked",
     },
@@ -653,70 +715,87 @@ export function SpecPilotWorkbench() {
   return (
     <main className="mesh-background overflow-x-clip">
       <div className="mx-auto flex w-full max-w-[92rem] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
-        <section className="grid gap-6 xl:grid-cols-[minmax(0,1.08fr)_minmax(20rem,0.92fr)]">
-          <div
-            className="glass-card shine-border hero-panel min-w-0 rounded-[2.35rem] p-6 sm:p-8"
-            data-reveal=""
-            style={revealStyle(0)}
-          >
-            <div className="eyebrow-chip">
-              <WandSparkles className="h-4 w-4" />
-              GenAI QA flagship project
-            </div>
-
-            <div className="mt-7 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-end">
-              <div className="min-w-0">
-                <p className="max-w-xs text-xs font-semibold uppercase tracking-[0.34em] text-copy-muted">
-                  Contract-grounded testing. Execution evidence. Bug-ready reporting.
-                </p>
-                <h1 className="mt-4 max-w-4xl font-display text-[clamp(3.6rem,8vw,6.8rem)] leading-[0.9] tracking-[-0.08em] text-copy">
-                  SpecPilot
-                </h1>
-                <p className="mt-5 max-w-3xl text-base leading-8 text-copy-muted sm:text-lg">
-                  A cinematic, spec-grounded API copilot that walks the user from contract intake
-                  to endpoint selection, suite generation, live execution, and markdown handoff
-                  without losing the thread.
-                </p>
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1.08fr)_minmax(20rem,0.92fr)] xl:items-stretch">
+          <div className="flex min-w-0 flex-col gap-6 xl:h-full">
+            <div
+              className="glass-card shine-border hero-panel min-w-0 self-start rounded-[2.35rem] p-6 sm:p-8"
+              data-reveal=""
+              style={revealStyle(0)}
+            >
+              <div className="eyebrow-chip">
+                <WandSparkles className="h-4 w-4" />
+                GenAI QA flagship project
               </div>
 
-              <div className="grid gap-3">
-                <a
-                  className="inline-flex items-center justify-between rounded-full border border-accent/35 bg-accent-soft px-5 py-3 text-sm font-semibold text-copy transition hover:border-accent/55 hover:bg-accent-soft/80"
-                  href="#step-1"
-                >
-                  Start the guided flow
-                  <ArrowRight className="h-4 w-4 text-accent" />
-                </a>
-                <a
-                  className="inline-flex items-center justify-between rounded-full border border-border bg-white/5 px-5 py-3 text-sm font-semibold text-copy transition hover:bg-white/8"
-                  href="#step-5"
-                >
-                  Jump to run board
-                  <ArrowRight className="h-4 w-4 text-copy-muted" />
-                </a>
+              <div className="mt-7 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-end">
+                <div className="min-w-0">
+                  <p className="max-w-xs text-xs font-semibold uppercase tracking-[0.34em] text-copy-muted">
+                    Contract-grounded testing. Execution evidence. Bug-ready reporting.
+                  </p>
+                  <h1 className="mt-4 max-w-4xl font-display text-[clamp(3.6rem,8vw,6.8rem)] leading-[0.9] tracking-[-0.08em] text-copy">
+                    SpecPilot
+                  </h1>
+                  <p className="mt-5 max-w-3xl text-base leading-8 text-copy-muted sm:text-lg">
+                    A cinematic, spec-grounded API copilot that walks the user from contract intake
+                    to endpoint selection, suite generation, live execution, and markdown handoff
+                    without losing the thread.
+                  </p>
+                </div>
+
+                <div className="grid gap-3">
+                  <a
+                    className="inline-flex items-center justify-between rounded-full border border-accent/35 bg-accent-soft px-5 py-3 text-sm font-semibold text-copy transition hover:border-accent/55 hover:bg-accent-soft/80"
+                    href="#step-1"
+                  >
+                    Start the guided flow
+                    <ArrowRight className="h-4 w-4 text-accent" />
+                  </a>
+                  <a
+                    className="inline-flex items-center justify-between rounded-full border border-border bg-white/5 px-5 py-3 text-sm font-semibold text-copy transition hover:bg-white/8"
+                    href="#step-5"
+                  >
+                    Jump to run board
+                    <ArrowRight className="h-4 w-4 text-copy-muted" />
+                  </a>
+                </div>
+              </div>
+
+              <div className="mt-8 grid gap-3 md:grid-cols-3">
+                <MetricCard
+                  icon={<FileCode2 className="h-4 w-4" />}
+                  label="Grounded"
+                  value="Requests, expectations, and paths stay anchored in the uploaded contract."
+                />
+                <MetricCard
+                  icon={<Bot className="h-4 w-4" />}
+                  label="Hybrid planner"
+                  value="Deterministic parsing stays in control while AI can prioritize extra edge-case coverage when available."
+                />
+                <MetricCard
+                  icon={<Bug className="h-4 w-4" />}
+                  label="Execution"
+                  value="Failures turn into explainable results and a shareable markdown artifact."
+                />
               </div>
             </div>
 
-            <div className="mt-8 grid gap-3 md:grid-cols-3">
-              <MetricCard
-                icon={<FileCode2 className="h-4 w-4" />}
-                label="Grounded"
-                value="Requests, expectations, and paths stay anchored in the uploaded contract."
-              />
-              <MetricCard
-                icon={<Bot className="h-4 w-4" />}
-                label="Hybrid planner"
-                value="Deterministic parsing stays in control while AI can prioritize extra edge-case coverage when available."
-              />
-              <MetricCard
-                icon={<Bug className="h-4 w-4" />}
-                label="Execution"
-                value="Failures turn into explainable results and a shareable markdown artifact."
-              />
+            <div
+              className="glass-card shine-border min-w-0 rounded-[2.05rem] p-5 sm:p-6 xl:flex-1"
+              data-reveal=""
+              style={revealStyle(60)}
+            >
+              <div className="flex h-full min-w-0 flex-col">
+                <h3 className="font-display text-[clamp(2.2rem,5vw,4.25rem)] leading-[0.92] tracking-[-0.07em] text-copy">
+                  Built by Aditya Srivastava
+                </h3>
+                <div className="mt-5 scene-shell scene-shell--social flex-1">
+                  <SocialOrbitScene links={creatorProfiles} />
+                </div>
+              </div>
             </div>
           </div>
 
-          <div className="flex min-w-0 flex-col gap-6">
+          <div className="flex min-w-0 flex-col gap-6 xl:h-full">
             <div
               className="glass-card min-w-0 rounded-[2.35rem] p-6 sm:p-7"
               data-reveal=""
@@ -733,7 +812,7 @@ export function SpecPilotWorkbench() {
             </div>
 
             <div
-              className="glass-card min-w-0 rounded-[2.1rem] p-6"
+              className="glass-card min-w-0 rounded-[2.1rem] p-6 xl:flex-1"
               data-reveal=""
               style={revealStyle(150)}
             >
@@ -1094,14 +1173,14 @@ export function SpecPilotWorkbench() {
               <div className="mt-6 grid gap-3 lg:grid-cols-2">
                 <StrategyButton
                   active={strategy === "baseline"}
-                  body="Purely contract-derived coverage with deterministic planning notes and no AI prioritization."
+                  body="Purely contract-derived core coverage with deterministic planning notes, contract linting, and no AI prioritization."
                   icon={<ClipboardList className="h-4 w-4" />}
                   onClick={() => setStrategy("baseline")}
                   title="Baseline suite"
                 />
                 <StrategyButton
                   active={strategy === "enhanced"}
-                  body="Keeps the deterministic core, promotes advanced edge cases, and optionally lets AI rank the riskiest additions."
+                  body="Adds deterministic security/resilience packs, richer constrained mutations, and optional AI prioritization on top of the deterministic core."
                   icon={<Bot className="h-4 w-4" />}
                   onClick={() => setStrategy("enhanced")}
                   title="Enhanced suite"
@@ -1172,128 +1251,310 @@ export function SpecPilotWorkbench() {
           style={revealStyle(100)}
         >
           <StepHeader
-            description="Review the coverage mix, inspect the structured risk priorities, and verify which advanced edge cases were promoted into runnable tests."
+            description="Review contract quality, inspect deterministic security and resilience probes, and verify which advanced edge cases were promoted into runnable tests."
             stage="04"
             status={
               plan
-                ? `${plan.testCases.length} cases ready, ${plan.coverage.sources.hybrid} hybrid`
+                ? `${plan.testCases.length} cases ready, ${packCaseCount} pack, ${plan.coverage.sources.hybrid} hybrid`
                 : "Waiting for generated plan"
             }
             title="Inspect the generated suite"
           />
 
           {plan ? (
-            <div className="mt-7 grid gap-6 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-              <div className="grid gap-4">
-                <div className="stats-fluid-grid">
-                  <MetricStat label="Operations" value={String(plan.coverage.operationsCovered)} />
-                  <MetricStat label="Cases" value={String(plan.coverage.totalCases)} />
-                  <MetricStat label="Deterministic" value={String(plan.coverage.sources.deterministic)} />
-                  <MetricStat label="Hybrid" value={String(plan.coverage.sources.hybrid)} />
-                  <MetricStat label="Happy" value={String(plan.coverage.categories.happy)} />
-                  <MetricStat label="Validation" value={String(plan.coverage.categories.validation)} />
-                  <MetricStat label="Auth" value={String(plan.coverage.categories.auth)} />
-                  <MetricStat label="Discovery" value={String(plan.coverage.categories.discovery)} />
-                </div>
+            <div className="mt-7 grid gap-6">
+              <div className="grid gap-6 xl:grid-cols-[16.75rem_minmax(0,1fr)] xl:items-stretch">
+                <SuiteOverviewRail
+                  packCaseCount={packCaseCount}
+                  plan={plan}
+                />
 
-                <div className="rounded-[1.65rem] border border-border bg-white/5 p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.2em] text-copy-muted">
-                        <Bot className="h-4 w-4 text-accent" />
-                        Planning summary
+                <SuiteSectionFrame
+                  badge={formatRiskSourceContext(plan.riskMemoSource)}
+                  bodyClassName="flex flex-1 flex-col gap-4"
+                  className="flex h-full flex-col"
+                  description="Lead with the story of the suite, then let the user inspect contract signal, coverage additions, and runnable cases in a deliberate order."
+                  eyebrow="Executive summary"
+                  icon={<Gauge className="h-4 w-4 text-accent" />}
+                  title="What this generated suite is optimized to catch"
+                >
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
+                    <div className="rounded-[1.6rem] border border-border bg-panel px-5 py-5">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-copy-muted">
+                        Plan narrative
                       </div>
-                      <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-copy-muted">
-                        Risk source: {formatRiskSourceLabel(plan.riskMemoSource)}
+                      <p className="mt-4 text-base leading-8 text-copy">
+                        {plan.planSummary ??
+                          "The generated plan is ready. Review the structured priorities and confirm the suite mix feels intentional before you run it."}
                       </p>
+
+                      <div className="mt-5 flex flex-wrap gap-2 text-xs text-copy-muted">
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Risk source: {formatRiskSourceLabel(plan.riskMemoSource)}
+                        </span>
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Lint findings: {plan.specLintSummary.totalFindings}
+                        </span>
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Pack probes: {packCaseCount}
+                        </span>
+                      </div>
                     </div>
-                    <span className="rounded-full border border-accent/25 bg-accent-soft px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
-                      {formatRiskSourceContext(plan.riskMemoSource)}
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <SuiteOverviewMetric
+                        detail={`${Math.max(plan.specLintSummary.bySeverity.high, 0)} high-severity signal${plan.specLintSummary.bySeverity.high === 1 ? "" : "s"}`}
+                        label="Contract score"
+                        value={`${plan.specLintSummary.score}/100`}
+                      />
+                      <SuiteOverviewMetric
+                        detail={`${plan.coverage.operationsCovered} selected operation${plan.coverage.operationsCovered === 1 ? "" : "s"}`}
+                        label="Runnable cases"
+                        value={String(plan.coverage.totalCases)}
+                      />
+                      <SuiteOverviewMetric
+                        detail={`${plan.coverage.packs.security} security, ${plan.coverage.packs.resilience} resilience`}
+                        label="Pack probes"
+                        value={String(packCaseCount)}
+                      />
+                      <SuiteOverviewMetric
+                        detail={`${plan.hybridScenarios.length} promoted scenario${plan.hybridScenarios.length === 1 ? "" : "s"}`}
+                        label="Hybrid promoted"
+                        value={String(plan.coverage.sources.hybrid)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="scene-shell scene-shell--executive flex-1">
+                    <SuiteSignalScene />
+                  </div>
+                </SuiteSectionFrame>
+              </div>
+
+              <div className="grid gap-6 2xl:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
+                <SuiteSectionFrame
+                  badge={`Score ${plan.specLintSummary.score}/100`}
+                  description="Pull contract weaknesses up into their own review block so the user can read the quality signal before diving into every test card."
+                  eyebrow="Contract review"
+                  icon={<AlertTriangle className="h-4 w-4 text-accent" />}
+                  title="Deterministic quality signals from the source spec"
+                >
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <span className="rounded-full border border-danger/25 bg-danger/10 px-3 py-2 text-[#ffd2ea]">
+                      High: {plan.specLintSummary.bySeverity.high}
+                    </span>
+                    <span className="rounded-full border border-warning/25 bg-warning/10 px-3 py-2 text-[#f9deb1]">
+                      Medium: {plan.specLintSummary.bySeverity.medium}
+                    </span>
+                    <span className="rounded-full border border-border bg-white/5 px-3 py-2 text-copy-muted">
+                      Low: {plan.specLintSummary.bySeverity.low}
                     </span>
                   </div>
-                  <p className="mt-4 text-sm leading-7 text-copy-muted">
-                    {plan.planSummary ??
-                      "The generated plan is ready. Review the structured priorities and confirm the suite mix feels intentional before you run it."}
-                  </p>
-                </div>
 
-                <div className="grid gap-3">
-                  {plan.riskInsights.map((insight) => (
-                    <RiskInsightCard
-                      insight={insight}
-                      key={insight.id}
-                    />
-                  ))}
-                </div>
-
-                <div className="rounded-[1.65rem] border border-border bg-white/5 p-5">
-                  <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.2em] text-copy-muted">
-                    <Sparkles className="h-4 w-4 text-accent" />
-                    Promoted edge cases
-                  </div>
-
-                  {plan.hybridScenarios.length > 0 ? (
-                    <div className="mt-4 grid gap-3">
-                      {plan.hybridScenarios.map((scenario) => (
-                        <HybridScenarioCard
-                          key={scenario.id}
-                          scenario={scenario}
+                  {plan.specLintFindings.length > 0 ? (
+                    <div className="mt-5 grid gap-3">
+                      {plan.specLintFindings.map((finding) => (
+                        <SpecLintFindingCard
+                          finding={finding}
+                          key={finding.id}
                         />
                       ))}
                     </div>
                   ) : (
-                    <p className="mt-4 text-sm leading-7 text-copy-muted">
-                      No additional hybrid edge cases were promoted for this selection, so the suite stays on the deterministic core.
+                    <p className="mt-5 text-sm leading-7 text-copy-muted">
+                      The selected API surface looks contract-healthy. SpecPilot did not find any immediate deterministic quality gaps worth flagging before execution.
                     </p>
                   )}
-                </div>
-              </div>
+                </SuiteSectionFrame>
 
-              <div className="min-w-0">
-                <div className="space-y-3 pr-1">
-                  {plan.testCases.map((testCase) => (
-                    <div
-                      className="rounded-[1.55rem] border border-border bg-panel px-5 py-5"
-                      key={testCase.id}
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <MethodBadge method={testCase.method} />
-                        <SourceBadge source={testCase.source} />
-                        {testCase.priority ? <PriorityBadge priority={testCase.priority} /> : null}
-                        <span className="rounded-full border border-border px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-copy-muted">
-                          {testCase.category}
+                <SuiteSectionFrame
+                  badge={`${packCaseCount + plan.hybridScenarios.length} highlighted`}
+                  description="Coverage add-ons are grouped by intent: deterministic pack probes stay separate from AI-prioritized hybrid cases so the suite reads like an engineered system, not a random list."
+                  eyebrow="Coverage architecture"
+                  icon={<ShieldCheck className="h-4 w-4 text-accent" />}
+                  title="How advanced coverage layers were assembled"
+                >
+                  <div className="grid gap-4">
+                    <div className="rounded-[1.45rem] border border-[#42d4b4]/20 bg-[linear-gradient(180deg,rgba(66,212,180,0.1),rgba(11,6,21,0.72))] px-5 py-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2 text-sm font-semibold text-copy">
+                            <ShieldCheck className="h-4 w-4 text-[#42d4b4]" />
+                            Deterministic packs
+                          </div>
+                          <p className="mt-2 text-sm leading-7 text-copy-muted">
+                            Security and resilience probes generated directly from the contract, without depending on model creativity.
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-[#42d4b4]/30 bg-[#42d4b4]/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#cbfff2]">
+                          {packCaseCount} case{packCaseCount === 1 ? "" : "s"}
                         </span>
-                        {testCase.mutation ? (
-                          <span className="rounded-full border border-accent/20 bg-accent-soft px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-accent">
-                            {testCase.mutation.replace(/_/g, " ")}
-                          </span>
-                        ) : null}
-                        <span className="text-sm font-semibold text-copy">{testCase.name}</span>
                       </div>
 
-                      <p className="mt-3 text-sm leading-7 text-copy-muted">{testCase.rationale}</p>
+                      <div className="mt-4 flex flex-wrap gap-2 text-xs text-copy-muted">
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Security: {plan.coverage.packs.security}
+                        </span>
+                        <span className="rounded-full border border-border px-3 py-2">
+                          Resilience: {plan.coverage.packs.resilience}
+                        </span>
+                      </div>
 
-                      <div className="mt-4 grid gap-2 text-xs text-copy-muted sm:grid-cols-3">
-                        <span className="rounded-full border border-border px-3 py-2">
-                          Expected: {testCase.expectedStatusPatterns.join(", ")}
-                        </span>
-                        <span className="rounded-full border border-border px-3 py-2">
-                          Path: <span className="font-mono">{testCase.path}</span>
-                        </span>
-                        <span className="rounded-full border border-border px-3 py-2">
-                          Auth: {testCase.requiresAuth ? "required" : "public"}
-                        </span>
+                      {packTestCases.length > 0 ? (
+                        <div className="mt-4 grid gap-3">
+                          {packTestCases.map((testCase) => (
+                            <div
+                              className="rounded-[1.2rem] border border-white/10 bg-black/10 px-4 py-4"
+                              key={testCase.id}
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                <PackBadge pack={testCase.pack} />
+                                <MethodBadge method={testCase.method} />
+                                <span className="rounded-full border border-border px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-copy-muted">
+                                  {testCase.category}
+                                </span>
+                              </div>
+                              <p className="mt-3 text-sm font-semibold text-copy">{testCase.name}</p>
+                              <p className="mt-2 text-sm leading-7 text-copy-muted">{testCase.rationale}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-4 text-sm leading-7 text-copy-muted">
+                          No deterministic security or resilience probes were required for this selected API surface.
+                        </p>
+                      )}
+                    </div>
+
+                      <div className="rounded-[1.45rem] border border-accent/20 bg-[linear-gradient(180deg,rgba(184,124,255,0.12),rgba(11,6,21,0.78))] px-5 py-5">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2 text-sm font-semibold text-copy">
+                              <Sparkles className="h-4 w-4 text-accent" />
+                              Promoted edge cases
+                            </div>
+                            <p className="mt-2 text-sm leading-7 text-copy-muted">
+                              Higher-risk hybrid scenarios surfaced from constrained contract mutations and then promoted into runnable cards.
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-accent/25 bg-accent-soft px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+                            {plan.hybridScenarios.length} scenario{plan.hybridScenarios.length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+
+                        {plan.hybridScenarios.length > 0 ? (
+                          <div className="mt-4 grid gap-3">
+                            {plan.hybridScenarios.map((scenario) => (
+                              <HybridScenarioCard
+                                key={scenario.id}
+                                scenario={scenario}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="mt-4 text-sm leading-7 text-copy-muted">
+                            No additional hybrid edge cases were promoted for this selection, so the suite stays on the deterministic core.
+                          </p>
+                        )}
                       </div>
                     </div>
-                  ))}
+                  </SuiteSectionFrame>
                 </div>
-              </div>
+
+                <SuiteSectionFrame
+                  badge={`${plan.riskInsights.length} insight${plan.riskInsights.length === 1 ? "" : "s"}`}
+                  description="Structured risk cards stay in their own band, so the user can scan priorities separately from the raw test inventory."
+                  eyebrow="Risk focus"
+                  icon={<Bot className="h-4 w-4 text-accent" />}
+                  title="Operational priorities worth extra attention"
+                >
+                  {plan.riskInsights.length > 0 ? (
+                    <div className="grid gap-3 xl:grid-cols-2">
+                      {plan.riskInsights.map((insight) => (
+                        <RiskInsightCard
+                          insight={insight}
+                          key={insight.id}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm leading-7 text-copy-muted">
+                      No additional structured risk insights were generated for this selection.
+                    </p>
+                  )}
+                </SuiteSectionFrame>
+
+                <SuiteSectionFrame
+                  badge={`${plan.testCases.length} case${plan.testCases.length === 1 ? "" : "s"}`}
+                  description="The runnable inventory now sits inside its own execution section with clearer titles, metadata, and category breakdown, so it feels like a professional suite review instead of one long unstructured column."
+                  eyebrow="Runnable suite"
+                  icon={<ClipboardList className="h-4 w-4 text-accent" />}
+                  title="Execution-ready test cases"
+                >
+                  <div className="flex flex-wrap gap-2 text-xs text-copy-muted">
+                    <span className="rounded-full border border-border px-3 py-2">
+                      Happy: {plan.coverage.categories.happy}
+                    </span>
+                    <span className="rounded-full border border-border px-3 py-2">
+                      Validation: {plan.coverage.categories.validation}
+                    </span>
+                    <span className="rounded-full border border-border px-3 py-2">
+                      Auth: {plan.coverage.categories.auth}
+                    </span>
+                    <span className="rounded-full border border-border px-3 py-2">
+                      Discovery: {plan.coverage.categories.discovery}
+                    </span>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 2xl:grid-cols-2">
+                    {plan.testCases.map((testCase) => (
+                      <div
+                        className="rounded-[1.55rem] border border-border bg-panel px-5 py-5"
+                        key={testCase.id}
+                      >
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <p className="text-base font-semibold text-copy">{testCase.name}</p>
+                            <p className="mt-2 min-w-0 break-all font-mono text-xs uppercase tracking-[0.18em] text-copy-muted">
+                              {testCase.method.toUpperCase()} {testCase.path}
+                            </p>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2 sm:max-w-[16rem] sm:justify-end">
+                            <SourceBadge source={testCase.source} />
+                            {testCase.pack ? <PackBadge pack={testCase.pack} /> : null}
+                            {testCase.priority ? <PriorityBadge priority={testCase.priority} /> : null}
+                            <span className="rounded-full border border-border px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-copy-muted">
+                              {testCase.category}
+                            </span>
+                            {testCase.mutation ? (
+                              <span className="rounded-full border border-accent/20 bg-accent-soft px-2 py-1 text-[11px] uppercase tracking-[0.18em] text-accent">
+                                {testCase.mutation.replace(/_/g, " ")}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <p className="mt-4 text-sm leading-7 text-copy-muted">{testCase.rationale}</p>
+
+                        <div className="mt-4 grid gap-2 text-xs text-copy-muted sm:grid-cols-2">
+                          <span className="rounded-full border border-border px-3 py-2">
+                            Expected: {testCase.expectedStatusPatterns.join(", ")}
+                          </span>
+                          <span className="rounded-full border border-border px-3 py-2">
+                            Auth: {testCase.requiresAuth ? "required" : "public"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </SuiteSectionFrame>
             </div>
           ) : (
             <EmptyState
               icon={<ClipboardList className="h-5 w-5 text-accent" />}
               title="Generate a plan to inspect the suite"
-              body="The workbench will show the planning summary, structured risk cards, promoted hybrid edge cases, and every runnable test case once the plan is created."
+              body="The workbench will show contract quality findings, deterministic pack coverage, promoted hybrid edge cases, and every runnable test case once the plan is created."
             />
           )}
         </section>
@@ -1555,6 +1816,7 @@ export function SpecPilotWorkbench() {
                         <div className="flex flex-wrap items-center gap-3">
                           <StatusBadge status={result.status} />
                           {linkedTestCase ? <SourceBadge source={linkedTestCase.source} /> : null}
+                          {linkedTestCase?.pack ? <PackBadge pack={linkedTestCase.pack} /> : null}
                           {linkedTestCase?.priority ? (
                             <PriorityBadge priority={linkedTestCase.priority} />
                           ) : null}
@@ -1894,6 +2156,18 @@ function WorkflowRail({
   );
 }
 
+function SceneFallback({ variant }: { variant: "social" | "crystal" }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`scene-fallback scene-fallback--${variant}`}
+    >
+      <div className="scene-fallback__halo" />
+      <div className="scene-fallback__orb" />
+    </div>
+  );
+}
+
 function HeroScene() {
   const [tiltStyle, setTiltStyle] = useState<CSSProperties>({
     ["--tilt-x" as string]: "0deg",
@@ -1995,6 +2269,178 @@ function MetricStat({ label, value }: { label: string; value: string }) {
       </div>
       <div className="mt-3 break-words text-lg font-semibold text-copy">{value}</div>
     </div>
+  );
+}
+
+function SuiteOverviewRail({
+  plan,
+  packCaseCount,
+}: {
+  plan: TestPlan;
+  packCaseCount: number;
+}) {
+  const readingOrder = [
+    {
+      label: "Executive summary",
+      detail: "Read the generated suite story before you dive into individual cards.",
+    },
+    {
+      label: "Contract review",
+      detail: `${plan.specLintSummary.totalFindings} lint finding${plan.specLintSummary.totalFindings === 1 ? "" : "s"} surfaced separately for faster scanning.`,
+    },
+    {
+      label: "Coverage architecture",
+      detail: `${packCaseCount} pack probe${packCaseCount === 1 ? "" : "s"} plus ${plan.hybridScenarios.length} promoted hybrid scenario${plan.hybridScenarios.length === 1 ? "" : "s"}.`,
+    },
+    {
+      label: "Runnable suite",
+      detail: `${plan.testCases.length} execution-ready test card${plan.testCases.length === 1 ? "" : "s"}.`,
+    },
+  ];
+
+  return (
+    <aside className="min-w-0 xl:self-start">
+      <div className="rounded-[1.95rem] border border-accent/20 bg-[linear-gradient(180deg,rgba(184,124,255,0.14),rgba(11,6,21,0.94))] p-5 shadow-[0_24px_60px_rgba(0,0,0,0.24)]">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.28em] text-accent">
+          Suite architecture
+        </div>
+        <h3 className="mt-4 font-display text-[clamp(2rem,4vw,2.8rem)] leading-[0.94] tracking-[-0.06em] text-copy">
+          Read the signal first.
+        </h3>
+        <p className="mt-4 text-sm leading-7 text-copy-muted">
+          This generated suite is now grouped like a product review, not a raw dump of cards, so the strongest signals stay visible first.
+        </p>
+
+        <div className="mt-5 rounded-[1.5rem] border border-border bg-panel px-4 py-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-copy-muted">
+            Planning source
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className="rounded-full border border-accent/25 bg-accent-soft px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
+              {formatRiskSourceLabel(plan.riskMemoSource)}
+            </span>
+            <span className="rounded-full border border-border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-copy-muted">
+              {formatRiskSourceContext(plan.riskMemoSource)}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+          <SuiteOverviewMetric
+            detail={`${plan.specLintSummary.totalFindings} total finding${plan.specLintSummary.totalFindings === 1 ? "" : "s"}`}
+            label="Contract score"
+            value={`${plan.specLintSummary.score}/100`}
+          />
+          <SuiteOverviewMetric
+            detail={`${plan.coverage.operationsCovered} selected operation${plan.coverage.operationsCovered === 1 ? "" : "s"}`}
+            label="Runnable cases"
+            value={String(plan.testCases.length)}
+          />
+          <SuiteOverviewMetric
+            detail={`${plan.coverage.packs.security} security, ${plan.coverage.packs.resilience} resilience`}
+            label="Pack probes"
+            value={String(packCaseCount)}
+          />
+          <SuiteOverviewMetric
+            detail={`${plan.coverage.sources.hybrid} hybrid case${plan.coverage.sources.hybrid === 1 ? "" : "s"}`}
+            label="Advanced layer"
+            value={String(plan.hybridScenarios.length)}
+          />
+        </div>
+
+        <div className="mt-5 rounded-[1.5rem] border border-border bg-panel px-4 py-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-copy-muted">
+            Reading order
+          </p>
+
+          <div className="mt-4 grid gap-3">
+            {readingOrder.map((item, index) => (
+              <div
+                className="grid grid-cols-[auto_1fr] gap-3 rounded-[1.1rem] border border-white/10 bg-white/5 px-3 py-3"
+                key={item.label}
+              >
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-accent/20 bg-accent-soft text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-copy">{item.label}</p>
+                  <p className="mt-1 text-xs leading-6 text-copy-muted">{item.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function SuiteOverviewMetric({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="rounded-[1.35rem] border border-border bg-white/5 px-4 py-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-copy-muted">
+        {label}
+      </div>
+      <div className="mt-3 font-display text-[1.65rem] leading-none tracking-[-0.06em] text-copy">
+        {value}
+      </div>
+      <p className="mt-3 text-xs leading-6 text-copy-muted">{detail}</p>
+    </div>
+  );
+}
+
+function SuiteSectionFrame({
+  eyebrow,
+  title,
+  description,
+  badge,
+  icon,
+  children,
+  className,
+  bodyClassName,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  badge?: string;
+  icon: ReactNode;
+  children: ReactNode;
+  className?: string;
+  bodyClassName?: string;
+}) {
+  return (
+    <section
+      className={`rounded-[1.95rem] border border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(11,6,21,0.92))] px-5 py-5 sm:px-6 sm:py-6 ${className ?? ""}`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 max-w-3xl">
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.28em] text-accent">
+            {icon}
+            {eyebrow}
+          </div>
+          <h3 className="mt-4 font-display text-[clamp(2rem,3.6vw,3rem)] leading-[0.96] tracking-[-0.06em] text-copy">
+            {title}
+          </h3>
+          <p className="mt-3 text-sm leading-7 text-copy-muted">{description}</p>
+        </div>
+
+        {badge ? (
+          <span className="rounded-full border border-accent/20 bg-accent-soft px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+            {badge}
+          </span>
+        ) : null}
+      </div>
+
+      <div className={`mt-6 ${bodyClassName ?? ""}`}>{children}</div>
+    </section>
   );
 }
 
@@ -2166,6 +2612,7 @@ function DiffChangeList({
               <div className="flex flex-wrap items-center gap-2">
                 <MethodBadge method={item.method} />
                 <SourceBadge source={item.source} />
+                {item.pack ? <PackBadge pack={item.pack} /> : null}
                 {item.priority ? <PriorityBadge priority={item.priority} /> : null}
               </div>
               <p className="mt-3 text-sm font-semibold text-copy">{item.name}</p>
@@ -2197,6 +2644,21 @@ function SourceBadge({ source }: { source: TestCaseSource }) {
       }`}
     >
       {source === "hybrid" ? "Hybrid" : "Deterministic"}
+    </span>
+  );
+}
+
+function PackBadge({ pack }: { pack: TestPack }) {
+  const tone =
+    pack === "security"
+      ? "border-[#8f7cff]/30 bg-[#8f7cff]/12 text-[#d6cbff]"
+      : "border-[#42d4b4]/30 bg-[#42d4b4]/12 text-[#cbfff2]";
+
+  return (
+    <span
+      className={`rounded-full border px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${tone}`}
+    >
+      {formatPackLabel(pack)}
     </span>
   );
 }
@@ -2234,6 +2696,37 @@ function PriorityBadge({ priority }: { priority: HybridScenario["priority"] | No
     >
       {priority} priority
     </span>
+  );
+}
+
+function SpecLintFindingCard({ finding }: { finding: SpecLintFinding }) {
+  return (
+    <div className="rounded-[1.35rem] border border-border bg-panel px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-copy">{finding.title}</p>
+          <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-copy-muted">
+            Category: {formatSpecLintCategory(finding.category)}
+          </p>
+        </div>
+        <SeverityBadge severity={finding.severity} />
+      </div>
+
+      <p className="mt-3 text-sm leading-7 text-copy-muted">{finding.summary}</p>
+
+      <div className="mt-4 flex flex-wrap gap-2 text-xs text-copy-muted">
+        <span className="rounded-full border border-border px-3 py-2">
+          Operations: {finding.operationIds.join(", ")}
+        </span>
+      </div>
+
+      <div className="mt-4 rounded-[1.05rem] border border-accent/15 bg-accent-soft/35 px-4 py-3">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+          Suggested fix
+        </p>
+        <p className="mt-2 text-sm leading-7 text-copy-muted">{finding.suggestion}</p>
+      </div>
+    </div>
   );
 }
 
