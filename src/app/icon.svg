@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="SpecPilot icon">
+  <defs>
+    <linearGradient id="specpilot-bg" x1="36" y1="28" x2="220" y2="228" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1b0d2f" />
+      <stop offset="0.58" stop-color="#0b0614" />
+      <stop offset="1" stop-color="#040208" />
+    </linearGradient>
+    <linearGradient id="specpilot-ring" x1="72" y1="64" x2="188" y2="194" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f7f1ff" />
+      <stop offset="0.54" stop-color="#d8b2ff" />
+      <stop offset="1" stop-color="#b87cff" />
+    </linearGradient>
+    <linearGradient id="specpilot-flight" x1="88" y1="174" x2="198" y2="82" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff82c5" />
+      <stop offset="1" stop-color="#b87cff" />
+    </linearGradient>
+  </defs>
+
+  <rect x="12" y="12" width="232" height="232" rx="58" fill="url(#specpilot-bg)" />
+  <rect x="18" y="18" width="220" height="220" rx="52" fill="none" stroke="#CAA6FF" stroke-opacity="0.22" />
+
+  <circle cx="128" cy="128" r="70" fill="none" stroke="url(#specpilot-ring)" stroke-width="14" opacity="0.95" />
+  <path
+    d="M76 168C92 149 108 136 129 125C149 114 171 104 192 82"
+    fill="none"
+    stroke="url(#specpilot-flight)"
+    stroke-linecap="round"
+    stroke-width="12"
+  />
+
+  <path
+    d="M92 142L188 82C193 79 198 84 196 89L159 183C157 189 149 189 146 183L132 151L101 137C95 134 95 126 101 123L188 82"
+    fill="#f7f1ff"
+  />
+  <path
+    d="M132 151L188 82L151 169L140 159Z"
+    fill="#b87cff"
+  />
+
+  <circle cx="194" cy="80" r="12" fill="#ff82c5" />
+  <circle cx="194" cy="80" r="5" fill="#f7f1ff" />
+</svg>
